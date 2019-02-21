@@ -1,4 +1,6 @@
 #include <hexrays.hpp>
+//#include <bytes.hpp>
+#include <xref.hpp>
 #include "HexRaysUtil.hpp"
 #include "PatternDeobfuscateUtil.hpp"
 #include "Config.hpp"
@@ -14,13 +16,13 @@ struct ObfCompilerOptimizer : public optinsn_t
 	// Though it may not seem like much of an "obfuscation" or "deobfuscation"
 	// technique on its own, getting rid of the "&1" terms helps reveal other
 	// patterns so they can be deobfuscated.
-	int pat_LogicAnd1(minsn_t *ins)
+	int pat_LogicAnd1(minsn_t *ins, mblock_t *blk)
 	{
 		// Only applies to OR / XOR microinstructions
 		if (ins->opcode != m_or && ins->opcode != m_xor)
 			return 0;
 
-		// Only applies when the operands are results of other 
+		// Only applies when the operands are results of other
 		// microinstructions (since, after all, we are expecting them to be
 		// ANDed by 1, which is represented in terms of a microinstruction
 		// provider mop_d operand).
@@ -29,12 +31,12 @@ struct ObfCompilerOptimizer : public optinsn_t
 
 		minsn_t *insLeft, *insRight;
 		mop_t *opLeft, *opRight;
-		
-		// Get rid of & 1. bLeft1 is true if there was an &1. 
+
+		// Get rid of & 1. bLeft1 is true if there was an &1.
 		bool bLeft1 = TunnelThroughAnd1(ins->l.d, insLeft, true, &opLeft);
 		if (!bLeft1)
 			return 0;
-		
+
 		// Same for right-hand side
 		bool bRight1 = TunnelThroughAnd1(ins->r.d, insRight, true, &opRight);
 		if (!bRight1)
@@ -46,25 +48,25 @@ struct ObfCompilerOptimizer : public optinsn_t
 		ins->l.d->opcode = ins->opcode;
 		ins->l.d->l.swap(*opLeft);
 		ins->l.d->r.swap(*opRight);
-		
+
 		// Change the top-level instruction from OR or XOR to AND, and set the
 		// right-hand side to the 1-bit constant value 1.
 		ins->opcode = m_and;
 		ins->r.make_number(1, 1);
-		
+
 		// msg("[I] pat_LogicAnd1\n");
 		// Return 1 to indicate that we changed the instruction.
 		return 1;
 	}
-	
-	// One of the obfuscation patterns involves a subtraction by 1. In the 
+
+	// One of the obfuscation patterns involves a subtraction by 1. In the
 	// assembly code, this is implemented by something like:
 	//
 	// add eax, 2
 	// add eax, ecx ; or whatever
 	// sub eax, 3
 	//
-	// Usually, Hex-Rays will automatically simplify this to (eax+ecx)-1. 
+	// Usually, Hex-Rays will automatically simplify this to (eax+ecx)-1.
 	// However, I did experience situations where Hex-Rays still represented
 	// the decompiled output as 2+(eax+ecx)-3. This function, then, determines
 	// when Hex-Rays has represented the subtraction as just mentioned. If so,
@@ -84,7 +86,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 		if (opAddNonNum->t != mop_d || opAddNonNum->d->opcode != m_sub)
 			return false;
 
-		// Extract y and z. I guess technically I shouldn't use 
+		// Extract y and z. I guess technically I shouldn't use
 		// ExtractNumAndNonNum here since subtraction isn't commutative...
 		// Call that a bug, but it didn't matter in practice.
 		mop_t *opSubNum = NULL, *opSubNonNum = NULL;
@@ -93,20 +95,20 @@ struct ObfCompilerOptimizer : public optinsn_t
 
 		// Pass y back to the caller
 		op = opSubNonNum;
-		
+
 		// x-z must be -1, or, equivalently, z-x must be 1.
 		return (opSubNum->nnn->value - opAddNum->nnn->value) == 1LL;
 	}
 
 	// This function performs the following pattern-substitution:
 	// (x * (x-1)) & 1 ==> 0
-	int pat_MulSub(minsn_t *andIns)
+	int pat_MulSub(minsn_t *andIns, mblock_t *blk)
 	{
 		// Topmost term has to be &1. The 1 is not required to be 1-byte large.
 		minsn_t *ins = andIns;
 		if (!TunnelThroughAnd1(ins, ins, false))
 			return 0;
-		
+
 		// Looking for multiplication terms
 		if (ins->opcode != m_mul)
 			return 0;
@@ -119,8 +121,8 @@ struct ObfCompilerOptimizer : public optinsn_t
 		minsn_t *insSub;    // Subtraction instruction x-1
 		mop_t *opMulNonSub; // Operand of multiply that isn't a subtraction
 		mop_t *subNonNum;   // x from the x-1 instruction
-		
-		// Try first method for locating subtraction by 1, i.e., simply 
+
+		// Try first method for locating subtraction by 1, i.e., simply
 		// subtraction by the constant number 1.
 		do
 		{
@@ -148,17 +150,22 @@ struct ObfCompilerOptimizer : public optinsn_t
 		{
 			// Find the ADD subterm of the multiplication. If this fails, both
 			// methods failed to find the pattern, so return.
-			if (!ExtractByOpcodeType(ins, m_add, insSub, opMulNonSub))
-				return 0;
-			
-			// Call the previous function to determine whether the ADD 
-			// implements a subtraction by 1.
-			bWasSubBy1 = pat_IsSubBy1(insSub, subNonNum);
+			// modified: not return for data flow tracking
+			if (ExtractByOpcodeType(ins, m_add, insSub, opMulNonSub))
+			{
+				// Call the previous function to determine whether the ADD
+				// implements a subtraction by 1.
+				bWasSubBy1 = pat_IsSubBy1(insSub, subNonNum);
+			}
 		}
-		
+
 		// If both methods failed, bail.
 		if (!bWasSubBy1)
-			return 0;
+		{
+			// data flow tracking for each y and (x - 1) operands
+			if (blk == NULL || !TraceAndExtractOpsMovAndSubBy1(blk, opMulNonSub, subNonNum, ins))
+				return 0;
+		}
 
 		// We know we're dealing with (x-1) * y. ensure x==y.
 		if (!equal_mops_ignore_size(*opMulNonSub, *subNonNum))
@@ -170,16 +177,212 @@ struct ObfCompilerOptimizer : public optinsn_t
 #if IDA_SDK_VERSION == 710
 		andIns->optimize_flat();
 #elif IDA_SDK_VERSION >= 720
-		andIns->optimize_solo();
+		if (blk)
+			blk->optimize_insn(andIns);
+		else
+			andIns->optimize_solo();
 #endif
 		// msg("[I] pat_MulSub\n");
+		return 1;
+	}
+
+	// check y * (x - 1) and extract the operands
+	// mop_t *opMulNonSub; // Operand y of multiply that isn't a subtraction
+	// mop_t *subNonNum;   // Operand x from the x-1 instruction
+	bool CheckAndExtractOpsSubBy1(minsn_t *ins, mop_t *&opMulNonSub, mop_t *&subNonNum)
+	{
+		minsn_t *insSub;    // Subtraction instruction x-1
+
+		// Try first method for locating subtraction by 1, i.e., simply
+		// subtraction by the constant number 1.
+		do
+		{
+			// Find the subtraction subterm of the multiplication
+			if (!ExtractByOpcodeType(ins, m_sub, insSub, opMulNonSub))
+				break;
+
+			mop_t *subNum;
+			// Find the numeric part of the subtraction. Again, I shouldn't use
+			// ExtractNumAndNonNum here since subtraction isn't commutative.
+			if (!ExtractNumAndNonNum(insSub, subNum, subNonNum))
+				break;
+
+			// Ensure that the subtraction amount is 1.
+			if (subNum->nnn->value != 1)
+				break;
+
+			// Indicate that we successfully found the subtraction.
+			return true;
+		} while (0);
+
+		// If we didn't find the subtraction, see if we have an add/sub pair
+		// instead, which totals to subtraction minus one.
+
+		// Find the ADD subterm of the multiplication. If this fails, both
+		// methods failed to find the pattern, so return.
+		if (!ExtractByOpcodeType(ins, m_add, insSub, opMulNonSub))
+			return false;
+
+		// Call the previous function to determine whether the ADD
+		// implements a subtraction by 1.
+		return pat_IsSubBy1(insSub, subNonNum);
+	}
+
+	// This function performs the following pattern-substitution:
+	// ~(x * (x - 1)) | -2 ==> -1
+	int pat_MulSub2(minsn_t *orIns, mblock_t *blk)
+	{
+		// Topmost term has to be |-2.
+		minsn_t *ins = orIns;
+		if (!TunnelThroughOrMinus2(ins, ins, false))
+			return 0;
+		if (ins->opcode != m_xdu)
+			return 0;
+
+		// extract the subinstructions
+		minsn_t *insBnot, *insMul;
+		if (!ins->l.is_insn() || ins->l.d->opcode != m_bnot)
+			return 0;
+		insBnot = ins->l.d;
+		if (!insBnot->l.is_insn() || insBnot->l.d->opcode != m_mul)
+		{
+			mop_t *op = &insBnot->l;
+			// data flow tracking for y * (x - 1) instruction
+			if (blk == NULL || !FindInsWithTheOp(blk, op, insBnot, insMul, m_mul))
+				return 0;
+		}
+		else
+			insMul = insBnot->l.d; // m_mul
+
+		// get y *(x-1)
+		mop_t *opMulNonSub; // Operand y of multiply that isn't a subtraction
+		mop_t *subNonNum;   // Operand x from the x-1 instruction
+		if (!CheckAndExtractOpsSubBy1(insMul, opMulNonSub, subNonNum))
+		{
+			// data flow tracking for each y and (x - 1) operands
+			if (blk == NULL || !TraceAndExtractOpsMovAndSubBy1(blk, opMulNonSub, subNonNum, insMul))
+				return 0;
+		}
+
+		// ensure x==y
+		if (!equal_mops_ignore_size(*opMulNonSub, *subNonNum))
+			return 0;
+
+		// If we get here, the pattern matched.
+		// Replace the whole multiplication instruction by 0.
+		//ins->l.make_number(0, ins->l.size);
+		insBnot->l.make_number(2, insBnot->l.size); // m_bnot operand to be modified with 2
+#if IDA_SDK_VERSION == 710
+		orIns->optimize_flat();
+#elif IDA_SDK_VERSION >= 720
+		if (blk)
+			blk->optimize_insn(orIns);
+		else
+			orIns->optimize_solo();
+#endif
+		//msg("[I] pat_MulSub2\n");
+		return 1;
+	}
+
+	// This function replaces read-only initialized global variable patterns with 0 in m_setl/m_jl/m_jge, m_seto (MMAT_CALLS or later only)
+	// either: dword_73FBB588 >= 10
+	// or:     dword_73FBB588 < 10
+	int pat_InitedVarCond10(minsn_t *&ins, mblock_t *blk)
+	{
+		if (ins->opcode == m_seto && (blk == NULL || blk->mba->maturity <= MMAT_LOCOPT))
+			return 0;
+
+		mop_t *condNum;
+		mop_t *condNonNum;
+		if (!ExtractNumAndNonNum(ins, condNum, condNonNum))
+			return 0;
+
+		//if (condNum->nnn->value != 10)
+		if (condNum->nnn->value != 10 && condNum->nnn->value != 9)
+			return 0;
+
+		if (condNonNum->t == mop_v)
+		{
+			if (!IsReadOnlyInitedVar(condNonNum))
+				return 0;
+		}
+		else
+		{
+			minsn_t *insOut;
+			if (blk == NULL || !FindInsWithTheOp(blk, condNonNum, ins, insOut, m_mov, mop_v))
+				return 0;
+			if (!IsReadOnlyInitedVar(&insOut->l))
+				return 0;
+		}
+
+		// Replace the global variable with 0
+		if (equal_mops_ignore_size(ins->l, *condNonNum))
+			ins->l.make_number(0, ins->l.size);
+		else
+			ins->r.make_number(0, ins->r.size);
+#if IDA_SDK_VERSION == 710
+		ins->optimize_flat();
+#elif IDA_SDK_VERSION >= 720
+		if (blk)
+			blk->optimize_insn(ins);
+		else
+			ins->optimize_solo();
+#endif
+		return 1;
+	}
+
+	// This function replaces read-only initialized global variable patterns with 0 in m_sets (MMAT_CALLS or later only)
+	// either: dword_73FBB588 - 10 >= 0
+	// or:     dword_10020CE4 - 10 < 0
+	int pat_InitedVarSub10Cond0(minsn_t *ins, mblock_t *blk)
+	{
+		if (blk == NULL || blk->mba->maturity <= MMAT_LOCOPT)
+			return 0;
+
+		minsn_t *insSub;
+		if (!ins->l.is_insn() || ins->l.d->opcode != m_sub)
+			return 0;
+		insSub = ins->l.d;
+
+		int ret = pat_InitedVarCond10(insSub, blk);
+		if (ret && insSub->opcode == m_nop)
+		{
+			ins->opcode = m_mov;
+			ins->l.make_number(1, 1);
+			if (blk)
+				blk->optimize_insn(ins);
+			else
+				ins->optimize_solo();
+			return 1;
+		}
+		return 0;
+	}
+
+	// This function replaces read-only initialized global variable patterns with 0
+	// e.g.,
+	// v10 = dword_73FBB590;
+	// if ( v10 < 10 )
+	//     ....
+	int pat_InitedVarMov(minsn_t *ins)
+	{
+		if (!IsReadOnlyInitedVar(&ins->l))
+			return 0;
+
+		// Replace the global variable with 0
+		ins->l.make_number(0, ins->l.size);
+#if IDA_SDK_VERSION == 710
+		ins->optimize_flat();
+#elif IDA_SDK_VERSION >= 720
+		ins->optimize_solo();
+		//blk->optimize_insn(ins);
+#endif
 		return 1;
 	}
 
 	// This function looks tries to replace patterns of the form
 	// either: (x&y)|(x^y)   ==> x|y
 	// or:     (x&y)|(y^x)   ==> x|y
-	int pat_OrViaXorAnd(minsn_t *ins)
+	int pat_OrViaXorAnd(minsn_t *ins, mblock_t *blk)
 	{
 #if OPTVERBOSE
 		qstring qIns;
@@ -215,15 +418,18 @@ struct ObfCompilerOptimizer : public optinsn_t
 #if IDA_SDK_VERSION == 710
 		ins->optimize_flat();
 #elif IDA_SDK_VERSION >= 720
-		ins->optimize_solo();
+		if (blk)
+			blk->optimize_insn(ins);
+		else
+			ins->optimize_solo();
 #endif
 		// msg("[I] pat_OrViaXorAnd\n");
 		return 1;
 	}
 
-	// This pattern replaces microcode of the form (x|!x), where x is a 
+	// This pattern replaces microcode of the form (x|!x), where x is a
 	// conditional, and !x is its syntactically-negated version, with 1.
-	int pat_OrNegatedSameCondition(minsn_t *ins)
+	int pat_OrNegatedSameCondition(minsn_t *ins, mblock_t *blk)
 	{
 #if OPTVERBOSE
 		qstring qIns;
@@ -239,11 +445,11 @@ struct ObfCompilerOptimizer : public optinsn_t
 		if (ins->l.t != mop_d || ins->r.t != mop_d)
 			return 0;
 
-		// Ensure x and y are syntactically-opposite versions of the same 
+		// Ensure x and y are syntactically-opposite versions of the same
 		// conditional.
 		if (!AreConditionsOpposite(ins->l.d, ins->r.d))
 			return 0;
-			
+
 		// If we get here, the pattern matched. Replace both sides of OR with
 		// 1, and then call optimize_flat to fold the constants.
 		ins->l.make_number(1, 1);
@@ -251,20 +457,23 @@ struct ObfCompilerOptimizer : public optinsn_t
 #if IDA_SDK_VERSION == 710
 		ins->optimize_flat();
 #elif IDA_SDK_VERSION >= 720
-		ins->optimize_solo();
+		if (blk)
+			blk->optimize_insn(ins);
+		else
+			ins->optimize_solo();
 #endif
 		// msg("[I] pat_OrNegatedSameCondition\n");
 		return 1;
 	}
 
-	// Replace patterns of the form (x&c)|(~x&d) (when c and d are numbers such 
+	// Replace patterns of the form (x&c)|(~x&d) (when c and d are numbers such
 	// that c == ~d) with x^d.
-	int pat_OrAndNot(minsn_t *ins)
+	int pat_OrAndNot(minsn_t *ins, mblock_t *blk)
 	{
 		// Looking for OR instructions...
 		if(ins->opcode != m_or)
 			return 0;
-		
+
 		// ... with compound operands ...
 		if (ins->l.t != mop_d || ins->r.t != mop_d)
 			return 0;
@@ -289,8 +498,8 @@ struct ObfCompilerOptimizer : public optinsn_t
 		// .. both constants have a size, and are the same size ...
 		if (lhsNum->size == NOSIZE || lhsNum->size != rhsNum->size)
 			return 0;
-		
-		// ... and the constants are bitwise inverses of one another ...		
+
+		// ... and the constants are bitwise inverses of one another ...
 		if ((lhsNum->nnn->value & rhsNum->nnn->value) != 0)
 			return 0;
 
@@ -328,7 +537,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 				return 0;
 			nonNottedInsn = rhsNonNum;
 		}
-		
+
 		// The expression that was NOTed must match the non-NOTed operand
 		if (!equal_mops_ignore_size(*nottedInsn, *nonNottedInsn))
 			return 0;
@@ -343,7 +552,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 
 	// Remove XOR chains with common terms. E.g. x^5^y^6^5^x ==> y^6.
 	// This uses the XorSimplifier class from PatternDeobfuscateUtil.
-	int pat_XorChain(minsn_t *ins)
+	int pat_XorChain(minsn_t *ins, mblock_t *blk)
 	{
 		if (ins->opcode != m_xor)
 			return 0;
@@ -355,7 +564,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 
 		// Automagically find duplicated expressions and erase them
 		XorSimplifier xs;
-		if (!xs.Simplify(ins))
+		if (!xs.Simplify(ins, blk))
 			return 0;
 
 #if OPTVERBOSE
@@ -393,8 +602,8 @@ struct ObfCompilerOptimizer : public optinsn_t
 		return true;
 	}
 
-	// Compare two sets of mop_t * (number values) element-by-element. There 
-	// should be one value in the larger set that's not in the smaller set. 
+	// Compare two sets of mop_t * (number values) element-by-element. There
+	// should be one value in the larger set that's not in the smaller set.
 	// Find and return it if that's the case.
 	mop_t *FindNonCommonConstant(std::set<mop_t *> *smaller, std::set<mop_t *> *bigger)
 	{
@@ -412,11 +621,11 @@ struct ObfCompilerOptimizer : public optinsn_t
 					break;
 				}
 			}
-			// We're looking for one constant in the larger set that isn't 
+			// We're looking for one constant in the larger set that isn't
 			// present in the smaller set.
 			if (!bFound)
 			{
-				// If noMatch was not NULL, then there was more than one 
+				// If noMatch was not NULL, then there was more than one
 				// constant in the larger set that wasn't in the smaller one,
 				// so return NULL on failure.
 				if (noMatch != NULL)
@@ -434,7 +643,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 	// The terms don't necessarily have to be in the same order; we extract the
 	// XOR subterms from both sides and find the missing value from the smaller
 	// XOR chain.
-	int pat_AndXor(minsn_t *ins)
+	int pat_AndXor(minsn_t *ins, mblock_t *blk)
 	{
 		// Instruction must be AND ...
 		if (ins->opcode != m_and)
@@ -445,15 +654,15 @@ struct ObfCompilerOptimizer : public optinsn_t
 		bool bRightIsNotXor = ins->r.t != mop_d || ins->r.d->opcode == m_xor;
 		if (!bLeftIsNotXor && !bRightIsNotXor)
 			return 0;
-		
-		// Collect the constant and non-constant parts of the XOR chains. We 
-		// use the XorSimplifier class, but we don't actually simplify the 
-		// instruction; we just make use of the existing functionality to 
+
+		// Collect the constant and non-constant parts of the XOR chains. We
+		// use the XorSimplifier class, but we don't actually simplify the
+		// instruction; we just make use of the existing functionality to
 		// collect the operands that are XORed together.
 		XorSimplifier xsL, xsR;
 		xsL.Insert(&ins->l);
 		xsR.Insert(&ins->r);
-		
+
 		// There must be the same number of non-constant terms on both sides
 		if (xsL.m_NonConst.size() != xsR.m_NonConst.size())
 			return 0;
@@ -480,14 +689,14 @@ struct ObfCompilerOptimizer : public optinsn_t
 
 		// Find the one constant value that wasn't common to both sides
 		mop_t *noMatch = FindNonCommonConstant(smaller, bigger);
-		
+
 		// If there wasn't one, the pattern failed, so return 0
 		if (noMatch == NULL)
 			return 0;
 
 		// Invert the non-common number and truncate it down to its proper size
 		noMatch->nnn->update_value(~noMatch->nnn->value & ((1ULL << (noMatch->size * 8)) - 1));
-		
+
 		// Replace the larger XOR construct with the now-inverted value
 		if (bLeftIsSmaller)
 			ins->r.swap(*noMatch);
@@ -499,7 +708,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 	}
 
 	// Replaces conditionals of the form !(!c1 || !c2) with (c1 && c2).
-	int pat_LnotOrLnotLnot(minsn_t *ins)
+	int pat_LnotOrLnotLnot(minsn_t *ins, mblock_t *blk)
 	{
 		// The whole expression must be logically negated.
 		minsn_t *inner;
@@ -526,7 +735,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 	}
 
 	// Replaces terms of the form ~(~x | n), where n is a number, with x & ~n.
-	int pat_BnotOrBnotConst(minsn_t *ins)
+	int pat_BnotOrBnotConst(minsn_t *ins, mblock_t *blk)
 	{
 		// We're looking for BNOT instructions (~y)...
 		if (ins->opcode != m_bnot || ins->l.t != mop_d)
@@ -556,43 +765,92 @@ struct ObfCompilerOptimizer : public optinsn_t
 
 		return 1;
 	}
-	
-	// This function just inspects the instruction and calls the 
+
+	// This function just inspects the instruction and calls the
 	// pattern-replacement functions above to perform deobfuscation.
-	int Optimize(minsn_t *ins)
+	int Optimize(minsn_t *ins, mblock_t *blk)
 	{
 		int iLocalRetVal = 0;
 
 		switch (ins->opcode)
 		{
 		case m_bnot:
-			iLocalRetVal = pat_BnotOrBnotConst(ins);
+			iLocalRetVal = pat_BnotOrBnotConst(ins, blk);
 			break;
 		case m_or:
-			iLocalRetVal = pat_OrAndNot(ins);
+			iLocalRetVal = pat_OrAndNot(ins, blk);
 			if (!iLocalRetVal)
-				iLocalRetVal = pat_OrViaXorAnd(ins);
+				iLocalRetVal = pat_OrViaXorAnd(ins, blk);
 			if (!iLocalRetVal)
-				iLocalRetVal = pat_OrNegatedSameCondition(ins);
+				iLocalRetVal = pat_OrNegatedSameCondition(ins, blk);
 			if (!iLocalRetVal)
-				iLocalRetVal = pat_LogicAnd1(ins);
-
+				iLocalRetVal = pat_LogicAnd1(ins, blk);
+			if (!iLocalRetVal)
+				iLocalRetVal = pat_MulSub2(ins, blk); // added
 			break;
 		case m_and:
-			iLocalRetVal = pat_AndXor(ins);
+			iLocalRetVal = pat_AndXor(ins, blk);
 			if (!iLocalRetVal)
-				iLocalRetVal = pat_MulSub(ins);
+				iLocalRetVal = pat_MulSub(ins, blk);
 			break;
 		case m_xor:
-			iLocalRetVal = pat_XorChain(ins);
+			iLocalRetVal = pat_XorChain(ins, blk);
 			if(!iLocalRetVal)
-				iLocalRetVal = pat_LnotOrLnotLnot(ins);
+				iLocalRetVal = pat_LnotOrLnotLnot(ins, blk);
 			if (!iLocalRetVal)
-				iLocalRetVal = pat_LogicAnd1(ins);
+				iLocalRetVal = pat_LogicAnd1(ins, blk);
 			break;
 		case m_lnot:
-			iLocalRetVal = pat_LnotOrLnotLnot(ins);
+			iLocalRetVal = pat_LnotOrLnotLnot(ins, blk);
 			break;
+		case m_setl:
+		case m_jl:
+		case m_jge:
+		case m_seto: // cause INTERR 50862 -> replace in later maturity level
+			iLocalRetVal = pat_InitedVarCond10(ins, blk); // added
+			break;
+		case m_sets:
+			iLocalRetVal = pat_InitedVarSub10Cond0(ins, blk); // added
+			break;
+		case m_mov:
+			//iLocalRetVal = pat_InitedVarMov(ins); data-flow tracking required
+			break;
+		///*
+		case m_jnz: // to optimize setl sub-instruction (jnz > xor > setl)
+			struct Blah2 : minsn_visitor_t
+			{
+				int visit_minsn()
+				{
+					if (curins->opcode == m_setl)
+					{
+						if (curins->l.t != mop_r && curins->r.t != mop_n && curins->r.nnn->value != 0xA)
+							return 0;
+						mop_t op_r = curins->l; // curins->d is mop_z(0)
+						int ret = othis->pat_InitedVarCond10(curins, mb);
+						// IDA automatically optimizes setl (0 < #0xA) => nop
+						// nop is not propagatable because it does not generate any value (INTERR 50800)
+						// replace nop with e.g., mov 1, cl
+						if (ret && curins->opcode == m_nop)
+						{
+							curins->opcode = m_mov;
+							curins->l.make_number(1, 1);
+							curins->d.make_reg(op_r.r, 1);
+							if (mb)
+								mb->optimize_insn(curins);
+							else
+								curins->optimize_solo();
+						}
+						return ret;
+					}
+					return 0;
+				}
+				ObfCompilerOptimizer *othis;
+				mblock_t *mb;
+				Blah2(ObfCompilerOptimizer *o, mblock_t *b) : othis(o), mb(b) { };
+			};
+			Blah2 b2(this, blk);
+			iLocalRetVal += ins->for_all_insns(b2);
+		//*/
 		}
 		return iLocalRetVal;
 	}
@@ -611,10 +869,10 @@ int ObfCompilerOptimizer::func(mblock_t *blk, minsn_t *ins)
 	msg("ObfCompilerOptimizer: %a %s\n", ins->ea, buf);
 #endif
 
-	int retVal = Optimize(ins);
+	int retVal = Optimize(ins, blk);
 	int iLocalRetVal = 0;
-	
-	// This callback doesn't seem to get called for subinstructions of 
+
+	// This callback doesn't seem to get called for subinstructions of
 	// conditional branches. So, if we're dealing with a conditional branch,
 	// manually optimize the condition expression
 	if ((is_mcode_jcond(ins->opcode) || is_mcode_set(ins->opcode)) && ins->l.t == mop_d)
@@ -622,28 +880,28 @@ int ObfCompilerOptimizer::func(mblock_t *blk, minsn_t *ins)
 		// In order to optimize the jcc condition, we actually need a different
 		// structure than optinsn_t: in particular, we need a minsn_visitor_t.
 		// This local structure declaration just passes the calls to
-		// minsn_visitor_t::visit_minsn onto the Optimize function in this 
+		// minsn_visitor_t::visit_minsn onto the Optimize function in this
 		// optinsn_t object.
 		struct Blah : minsn_visitor_t
 		{
 			int visit_minsn()
 			{
-				return othis->Optimize(this->curins);
+				return othis->Optimize(this->curins, blk);
 			}
 			ObfCompilerOptimizer *othis;
 			Blah(ObfCompilerOptimizer *o) : othis(o) { };
 		};
-		
+
 		Blah b(this);
-		
+
 		// Optimize all subinstructions of the JCC conditional
 		iLocalRetVal += ins->for_all_insns(b);
 		// For good measure, optimize the top-level instruction again. I don't
 		// know if this is necessary or important, but whatever.
-		// iLocalRetVal += Optimize(ins);		
+		// iLocalRetVal += Optimize(ins);
 	}
 	retVal += iLocalRetVal;
-	
+
 	// If any optimizations were performed...
 	if (retVal)
 	{
@@ -655,13 +913,16 @@ int ObfCompilerOptimizer::func(mblock_t *blk, minsn_t *ins)
 #if IDA_SDK_VERSION == 710
 		ins->optimize_flat();
 #elif IDA_SDK_VERSION >= 720
-		ins->optimize_solo();
+		if (blk)
+			blk->optimize_insn(ins);
+		else
+			ins->optimize_solo();
 #endif
 		// I got an INTERR if I optimized jcc conditionals without marking the lists dirty.
 		blk->mark_lists_dirty();
 		blk->mba->verify(true);
 		//blk->mba->optimize_local(0);
-		// ... verify we haven't corrupted anything 
+		// ... verify we haven't corrupted anything
 		//blk->mba->verify(true);
 	}
 	return retVal;

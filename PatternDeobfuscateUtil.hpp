@@ -5,9 +5,13 @@
 bool ExtractNumAndNonNum(minsn_t *insn, mop_t *&numOp, mop_t *&otherOp);
 bool ExtractByOpcodeType(minsn_t *ins, mcode_t mc, minsn_t *&match, mop_t*& noMatch);
 bool TunnelThroughAnd1(minsn_t *ins, minsn_t *&inner, bool bRequireSize1 = true, mop_t **opInner = NULL);
+bool TunnelThroughOrMinus2(minsn_t *ins, minsn_t *&inner, bool bRequireSize1 = true, mop_t **opInner = NULL);
 bool AreConditionCodesOpposite(mcode_t c1, mcode_t c2);
 bool ExtractLogicallyNegatedTerm(minsn_t *ins, minsn_t *&insNegated, mop_t **opNegated = NULL);
 bool AreConditionsOpposite(minsn_t *lhsCond, minsn_t *rhsCond);
+bool IsReadOnlyInitedVar(mop_t *op);
+bool FindInsWithTheOp(mblock_t *blk, mop_t *op, minsn_t *start, minsn_t *&ins, mcode_t opcode, mopt_t opt = 0);
+bool TraceAndExtractOpsMovAndSubBy1(mblock_t *blk, mop_t *&opMov, mop_t *&opSub, minsn_t *start);
 
 class XorSimplifier
 {
@@ -34,5 +38,5 @@ public:
 	void Insert(mop_t *op);
 	void Insert(minsn_t *insn);
 	bool DidSimplify();
-	bool Simplify(minsn_t *insn);
+	bool Simplify(minsn_t *insn, mblock_t *blk);
 };

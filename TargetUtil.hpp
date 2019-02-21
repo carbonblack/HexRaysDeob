@@ -4,6 +4,7 @@
 int RemoveSingleGotos(mbl_array_t *mba);
 bool SplitMblocksByJccEnding(mblock_t *pred1, mblock_t *pred2, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int &jccDest, int &jccFallthrough);
 int PruneUnreachable(mbl_array_t *mba);
+void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest);
 
 // The "deferred graph modifier" records changes that the client wishes to make
 // to a given graph, but does not apply them immediately. Weird things could

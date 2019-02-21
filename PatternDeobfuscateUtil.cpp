@@ -2,6 +2,7 @@
 #include "HexRaysUtil.hpp"
 #include "PatternDeobfuscateUtil.hpp"
 #include "Config.hpp"
+#include "DefUtil.hpp"
 
 // For microinstructions with two or more operands (in l and r), check to see
 // if one of them is numeric and the other one isn't. If this is the case,
@@ -109,6 +110,46 @@ bool TunnelThroughAnd1(minsn_t *ins, minsn_t *&inner, bool bRequireSize1, mop_t 
 	if (andNonNum->is_insn())
 	{
 		inner = andNonNum->d;
+		return true;
+	}
+
+	// Otherwise, if the non-numeric part wasn't a mop_d, check to see whether
+	// the caller specifically wanted a mop_d. If they did, fail. If the caller
+	// was willing to accept another operand type, return true.
+	return opInner != NULL;
+}
+
+// It checks to see whether the provided microinstruction is "x | -2" (or "-2 | x"),
+// and extracts x as both an operand,
+// and, if the operand is a mop_d (result of another microinstruction),
+// return the provider instruction also.
+bool TunnelThroughOrMinus2(minsn_t *ins, minsn_t *&inner, bool bRequireSize1, mop_t **opInner)
+{
+	// Microinstruction must be OR
+	if (ins->opcode != m_or)
+		return false;
+
+	// One side must be numeric, the other one non-numeric
+	mop_t *orNum, *orNonNum;
+	if (!ExtractNumAndNonNum(ins, orNum, orNonNum))
+		return false;
+
+	// The number must be the value -2
+	if (orNum->nnn->value != 0xFFFFFFFE)
+		return false;
+
+	if (bRequireSize1 && orNum->size != 1)
+		return false;
+
+	// If requested, pass the operand back to the caller this point
+	if (opInner != NULL)
+		*opInner = orNonNum;
+
+	// If the non-numeric operand is an instruction, extract the
+	// microinstruction and pass that back to the caller.
+	if (orNonNum->is_insn())
+	{
+		inner = orNonNum->d;
 		return true;
 	}
 
@@ -243,6 +284,105 @@ bool AreConditionsOpposite(minsn_t *lhsCond, minsn_t *rhsCond)
 	return false;
 }
 
+// This function checks whether the operand is a global variable unchanged since the initialization
+bool IsReadOnlyInitedVar(mop_t *op)
+{
+	if (op->t != mop_v) // global variable?
+		return false;
+
+	// check the global variable
+	// The variable is in a writable section? (e.g., .data section)
+	segment_t *s = getseg(op->g);
+	if (s == NULL)
+		return false;
+	if (s->perm != (SEGPERM_READ | SEGPERM_WRITE))
+		return false;
+	// TODO: section with IMAGE_SCN_CNT_INITIALIZED_DATA?
+
+	// The variable doesn't have a byte value?
+	if (is_loaded(op->g))
+		return false;
+	// The variable doesn't have xrefsTo with write access?
+	xrefblk_t xb;
+	for (bool ok = xb.first_to(op->g, XREF_DATA); ok; ok = xb.next_to())
+		if (xb.type == dr_W)
+			return false;
+
+	return true;
+}
+
+// This function traces the operand until getting the instruction with it
+// based on FindNumericDefBackwards in DefUtil.cpp
+bool FindInsWithTheOp(mblock_t *blk, mop_t *op, minsn_t *start, minsn_t *&ins, mcode_t opcode, mopt_t opt)
+{
+	//return false;
+	char buf[1000];
+	mlist_t ml;
+	// consider multiple register ids
+
+	if (!InsertOp(blk, ml, op))
+		return false;
+	minsn_t *mStart = start;
+	do
+	{
+		minsn_t *mDef = my_find_def_backwards(blk, ml, mStart);
+		if (mDef != NULL)
+		{
+			if (mDef->opcode == opcode && (opt == 0 || opt == mDef->l.t))
+			{
+				ins = mDef;
+				return true;
+			}
+
+			if (mDef->opcode == m_mov)
+			{
+				ml.clear();
+				if (!InsertOp(blk, ml, &mDef->l))
+					return false;
+			}
+			else
+			{
+				mcode_t_to_string(mDef, buf, sizeof(buf));
+#if OPTVERBOSE
+				msg("[E] FindInsWithTheOp: found %s\n", buf);
+#endif
+				return false;
+			}
+			mStart = mDef;
+		}
+		else // move to previous block
+		{
+			blk = blk->prevb;
+			mStart = NULL;
+		}
+	} while (blk->prevb != NULL);
+	return false;
+}
+
+// This function traces 2 operands separately for x and y in y * (x - 1)
+bool TraceAndExtractOpsMovAndSubBy1(mblock_t *blk, mop_t *&opMov, mop_t *&opSub, minsn_t *start)
+{
+	minsn_t *insMov, *insSub;
+	//if (FindInsWithTheOp(blk, &start->l, start, insMov, m_mov, mop_v) && FindInsWithTheOp(blk, &start->r, start, insSub, m_sub, mop_v))
+	if (FindInsWithTheOp(blk, &start->l, start, insMov, m_mov) && FindInsWithTheOp(blk, &start->r, start, insSub, m_sub))
+	{
+		opMov = &insMov->l;
+		mop_t *num;
+		if (ExtractNumAndNonNum(insSub, num, opSub) && num->nnn->value == 1)
+			return true;
+	}
+	// swap the search operands
+	//if (FindInsWithTheOp(blk, &start->r, start, insMov, m_mov, mop_v) && FindInsWithTheOp(blk, &start->l, start, insSub, m_sub, mop_v))
+	if (FindInsWithTheOp(blk, &start->r, start, insMov, m_mov) && FindInsWithTheOp(blk, &start->l, start, insSub, m_sub))
+	{
+		opMov = &insMov->l;
+		mop_t *num;
+		if (ExtractNumAndNonNum(insSub, num, opSub) && num->nnn->value == 1)
+			return true;
+	}
+	return false;
+}
+
 // Insert a micro-operand into one of the two sets above. Remove 
 // duplicates -- meaning, if the operand we're trying to insert is already
 // in the set, remove the existing one instead. This is the "cancellation"
@@ -339,7 +479,7 @@ bool XorSimplifier::DidSimplify()
 // Top-level functionality to simplify an XOR microinstruction. Insert the
 // instruction, then see if any simplifications could be performed. If so,
 // remove the simplified terms.
-bool XorSimplifier::Simplify(minsn_t *insn)
+bool XorSimplifier::Simplify(minsn_t *insn, mblock_t *blk)
 {
 	// Only insert XOR instructions
 	if (insn->opcode != m_xor)
@@ -360,7 +500,10 @@ bool XorSimplifier::Simplify(minsn_t *insn)
 #if IDA_SDK_VERSION == 710
 	insn->optimize_flat();
 #elif IDA_SDK_VERSION >= 720
-	insn->optimize_solo();
+	if (blk)
+		blk->optimize_insn(insn);
+	else
+		insn->optimize_solo();
 #endif
 	return true;
 }

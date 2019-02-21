@@ -17,10 +17,10 @@ static int debugmsg(const char *fmt, ...)
 void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest)
 {
 	assert(blk->tail != NULL);
-	
+
 	// Allocate a new instruction, using the tail as a template
 	minsn_t *newGoto = new minsn_t(*blk->tail);
-	
+
 	// Create a goto instruction to the specified block
 	newGoto->opcode = m_goto;
 	newGoto->l.t = mop_b;
@@ -28,7 +28,7 @@ void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest)
 	newGoto->l.size = NOSIZE;
 	newGoto->r.erase();
 	newGoto->d.erase();
-	
+
 	// Add it onto the block
 	blk->insert_into_block(newGoto, blk->tail);
 }
@@ -39,13 +39,13 @@ void ChangeSingleTarget(mblock_t *blk, int iOldTarget, int iNewTarget)
 {
 	assert(blk->nsucc() == 1);
 	mbl_array_t *mba = blk->mba;
-	
+
 	// Overwrite the successor with the new target
 	blk->succset[0] = iNewTarget;
 
 	// Add this block to the predecessor set of the target
 	mba->get_mblock(iNewTarget)->predset.add(blk->serial);
-		
+
 	// Remove this block from the predecessor set of the old target
 	mba->get_mblock(iOldTarget)->predset.del(blk->serial);
 }
@@ -63,7 +63,7 @@ bool is_call_block(mblock_t *blk)
 #define GOTO_NOT_SINGLE -1
 
 // This function eliminates transfers to blocks with a single goto on them.
-// Either if a given block has a goto at the end of it, where the destination 
+// Either if a given block has a goto at the end of it, where the destination
 // is a block with a single goto on it, or if the block doesn't end in a goto,
 // but simply falls through to a block with a single goto on it. Also, this
 // process happens recursively; i.e., if A goes to B, and B goes to C, and C
@@ -77,18 +77,19 @@ int RemoveSingleGotos(mbl_array_t *mba)
 	// For each block
 	for (int i = 0; i < mba->qty; ++i)
 	{
-		// Begin by initializing its information to say that it does not 
+		// Begin by initializing its information to say that it does not
 		// consist of a single goto. Update later if it does.
 		forwarderInfo[i] = GOTO_NOT_SINGLE;
 
 		// Get the block and skip any "assert" instructions.
 		mblock_t *b = mba->get_mblock(i);
-		minsn_t *m2 = getf_reginsn(b->head);
-		
+		//minsn_t *m2 = getf_reginsn(b->head);
+		minsn_t *m2 = b->head; // to prevent INTERR 51919?
+
 		// Is the first non-assert instruction a goto?
 		if (m2 == NULL || m2->opcode != m_goto)
-			continue; 
-		
+			continue;
+
 		// If it was a goto, record the destination block number
 		forwarderInfo[i] = m2->l.b;
 	}
@@ -98,9 +99,9 @@ int RemoveSingleGotos(mbl_array_t *mba)
 	for (int i = 0; i < mba->qty; ++i)
 	{
 		mblock_t *blk = mba->get_mblock(i);
-		
-		// FYI, don't screw with blocks that have calls at the end of them. 
-		// You'll get an INTERR. Also, if this block has more than one 
+
+		// FYI, don't screw with blocks that have calls at the end of them.
+		// You'll get an INTERR. Also, if this block has more than one
 		// successor, then it couldn't possibly be a transfer to a goto.
 		if (is_call_block(blk) || blk->nsucc() != 1)
 			continue;
@@ -113,7 +114,7 @@ int RemoveSingleGotos(mbl_array_t *mba)
 		int iOriginalGotoTarget;
 		// Now, look up the block number of the destination.
 		bool bWasGoto = true;
-		
+
 		// If the last instruction was a goto, get the information from there.
 		if (mgoto->opcode == m_goto)
 			iOriginalGotoTarget = mgoto->l.b;
@@ -129,12 +130,12 @@ int RemoveSingleGotos(mbl_array_t *mba)
 		int iGotoTarget = iOriginalGotoTarget;
 		bool bShouldReplace = false;
 		intvec_t visited;
-		
+
 		// Keep looping while we still find goto-to-gotos.
 		while (true)
 		{
 			// Keep track of the blocks we've seen so far, so we don't end up
-			// in an infinite loop if the goto blocks form a cycle in the 
+			// in an infinite loop if the goto blocks form a cycle in the
 			// graph.
 			if (!visited.add_unique(iGotoTarget))
 			{
@@ -149,12 +150,12 @@ int RemoveSingleGotos(mbl_array_t *mba)
 			// indicate that we should replace. Keep looping, though, to find
 			// the ultimate destination.
 			bShouldReplace = true;
-			
+
 			// Now check: did the single-goto block also target a single-goto
 			// block?
 			iGotoTarget = forwarderInfo[iGotoTarget];
 		}
-		
+
 		// If the target wasn't a single-goto block, or there was an infinite
 		// loop in the graph, don't touch this block.
 		if (!bShouldReplace)
@@ -175,19 +176,19 @@ int RemoveSingleGotos(mbl_array_t *mba)
 		// Change the successor/predecessor information for this block and its
 		// old and new target.
 		ChangeSingleTarget(blk, iOriginalGotoTarget, iGotoTarget);
-		
+
 		// Counter of the number of blocks changed.
 		++iRetVal;
 	}
-	
+
 	// Don't need the forwarder information anymore.
 	delete[] forwarderInfo;
-	
+
 	// Return the number of blocks whose destinations were changed
 	return iRetVal;
 }
 
-// For a block that ends in a conditional jump, extract the integer block 
+// For a block that ends in a conditional jump, extract the integer block
 // numbers for the "taken" and "not taken" cases.
 bool ExtractJccParts(mblock_t *pred1, mblock_t *&endsWithJcc, int &jccDest, int &jccFallthrough)
 {
@@ -203,7 +204,7 @@ bool ExtractJccParts(mblock_t *pred1, mblock_t *&endsWithJcc, int &jccDest, int 
 
 		// The fallthrough location is the block that's not directly targeted
 		// by the jcc instruction. Determine that by looking at the successors.
-		// I guess technically Hex-Rays enforces that it must be the 
+		// I guess technically Hex-Rays enforces that it must be the
 		// sequentially-next-numbered block, but oh well.
 		jccFallthrough = pred1->succ(0) == jccDest ? pred1->succ(1) : pred1->succ(0);
 		return true;
@@ -221,7 +222,7 @@ bool SplitMblocksByJccEnding(mblock_t *pred1, mblock_t *pred2, mblock_t *&endsWi
 	if (pred1->tail == NULL || pred2->tail == NULL)
 		return false;
 
-	// Check if the first block ends with jcc. Make sure the second one 
+	// Check if the first block ends with jcc. Make sure the second one
 	// doesn't also.
 	if (ExtractJccParts(pred1, endsWithJcc, jccDest, jccFallthrough))
 	{
@@ -264,13 +265,13 @@ void DeferredGraphModifier::Replace(int src, int oldDest, int newDest)
 int DeferredGraphModifier::Apply(mbl_array_t *mba)
 {
 	int iChanged = 0;
-	
+
 	// Iterate through the edges slated for removal
 	for (auto re : m_RemoveEdges)
 	{
 		mblock_t *mSrc = mba->get_mblock(re.first);
 		mblock_t *mDst = mba->get_mblock(re.second);
-		
+
 		// Remove the source as a predecessor for dest, and vice versa
 		mSrc->succset.del(mDst->serial);
 		mDst->predset.del(mSrc->serial);
@@ -306,7 +307,7 @@ bool DeferredGraphModifier::ChangeGoto(mblock_t *blk, int iOld, int iNew)
 {
 	bool bChanged = true;
 	int iDispPred = blk->serial;
-	
+
 	// If the last instruction isn't a goto, add a new one
 	if (blk->tail->opcode != m_goto)
 		AppendGotoOntoNonEmptyBlock(blk, iNew);
@@ -314,17 +315,17 @@ bool DeferredGraphModifier::ChangeGoto(mblock_t *blk, int iOld, int iNew)
 	// Otherwise, if it is a goto...
 	else
 	{
-		// Be sure we're actually *changing* the destination to a different 
+		// Be sure we're actually *changing* the destination to a different
 		// location
 		int prev = blk->tail->l.b;
 		if (prev == iNew)
 			bChanged = false;
-		
+
 		// And if so, do it
 		else
 			blk->tail->l.b = iNew;
 	}
-	
+
 	// If we did change the destination, plan to update the graph later
 	if (bChanged)
 		Replace(blk->serial, iOld, iNew);
@@ -355,7 +356,7 @@ void DeleteBlock(mblock_t *mb)
 		delete pCurr;
 		pCurr = pNext;
 	}
-	
+
 	// Mark that the block now has no instructions.
 	mb->head = NULL;
 	mb->tail = NULL;
@@ -365,7 +366,7 @@ void DeleteBlock(mblock_t *mb)
 // control flow graph represented in the mbl_array_t *. As a result, certain
 // blocks might no longer be reachable anymore in the graph. Thus, they can be
 // deleted with no ill-effects. In theory, we could wait for Hex-Rays to remove
-// these blocks, which it eventually will, sometime after MMAT_GLBOPT2. 
+// these blocks, which it eventually will, sometime after MMAT_GLBOPT2.
 // Originally, I just let Hex-Rays remove the blocks. However, it turned out
 // that the blocks were removed too late, which hampered other optimizations
 // that Hex-Rays otherwise would have been able to perform had the blocks been
@@ -378,19 +379,19 @@ void DeleteBlock(mblock_t *mb)
 // we'll use that instead of this function. For now, we prune manually.
 int PruneUnreachable(mbl_array_t *mba)
 {
-	// This set marks the vertices we've already visited. This both prevents 
-	// infinite loops in the depth-first search, as well as records the 
+	// This set marks the vertices we've already visited. This both prevents
+	// infinite loops in the depth-first search, as well as records the
 	// unreachable blocks after the search terminates.
 	bitset_t visited;
-	
-	// This is a standard worklist-based algorithm. This list keeps track of 
+
+	// This is a standard worklist-based algorithm. This list keeps track of
 	// reachable predecessors yet-to-be-visited.
 	qlist<int> worklist;
 
-	// Initialize the worklist to block #0, which always denotes the entry 
+	// Initialize the worklist to block #0, which always denotes the entry
 	// block in an mbl_array_t.
 	worklist.push_back(0);
-	
+
 	// Worklist iteration: process the next reachable block.
 	while (!worklist.empty())
 	{
@@ -405,31 +406,31 @@ int PruneUnreachable(mbl_array_t *mba)
 		// Mark that we have visited this particular block.
 		visited.add(iCurr);
 
-		// Insert all of the successors of this block into the worklist. It's 
+		// Insert all of the successors of this block into the worklist. It's
 		// fine if we insert a block that's already been visited, as the check
 		// above will prevent it from being visited again.
 		for (auto iSucc : mba->get_mblock(iCurr)->succset)
 			worklist.push_back(iSucc);
 	}
 
-	
+
 	// Count the number of unreachable blocks we remove.
 	int nRemoved = 0;
-	
+
 	// Iterate over all blocks in the mbl_array_t...
 	for (int i = 0; i < mba->qty; ++i)
 	{
-		// ... if it wasn't visited by the procedure above, then it's 
+		// ... if it wasn't visited by the procedure above, then it's
 		// unreachable.
 		if (!visited.has(i))
 		{
-			// If so, delete the instructions on the block and remove any 
+			// If so, delete the instructions on the block and remove any
 			// outgoing edges.
 			DeleteBlock(mba->get_mblock(i));
 			++nRemoved;
 		}
 	}
-	
+
 	// At this point we have to explicitly trigger removal of empty blocks. If
 	// we don't, we'll get an INTERR.
 	if(nRemoved != 0)

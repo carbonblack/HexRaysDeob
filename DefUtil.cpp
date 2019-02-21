@@ -162,11 +162,23 @@ bool FindNumericDefBackwards(mblock_t *blk, mop_t *op, mop_t *&opNum, MovChain &
 			// If there is more than one predecessor for this block, we don't
 			// know which one to follow, so stop.
 			if (blk->npred() != 1)
+			{
+				/*if (iBlockStop == 1) // trace back by prevb linked list for only the first block
+				{
+					blk = blk->prevb;
+					if (blk == NULL)
+						return false;
+				}
+				else
+					return false;*/
 				return false;
-			
-			// Recurse into sole predecessor block
-			int iPred = blk->pred(0);
-			blk = mba->get_mblock(iPred);
+			}
+			else
+			{
+				// Recurse into sole predecessor block
+				int iPred = blk->pred(0);
+				blk = mba->get_mblock(iPred);
+			}
 			
 			// If the predecessor has more than one successor, check to see
 			// whether the arguments allow that.
@@ -215,7 +227,8 @@ mop_t *FindForwardNumericDef(mblock_t *blk, mop_t *mop, minsn_t *&assign_insn)
 mop_t *FindForwardStackVarDef(mblock_t *mbClusterHead, mop_t *opCopy, MovChain &chain)
 {
 	// Must be a non-NULL stack variable
-	if (opCopy == NULL || opCopy->t != mop_S)
+	//if (opCopy == NULL || opCopy->t != mop_S)
+	if (opCopy == NULL || (opCopy->t != mop_S && opCopy->t != mop_r))
 		return NULL;
 
 	minsn_t *ins;
