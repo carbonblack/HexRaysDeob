@@ -25,7 +25,8 @@ static int debugmsg(const char *fmt, ...)
 
 void DumpMBAToFile(mbl_array_t *mba, const char *fpath)
 {
-	FILE *fp = qfopen(fpath, "w");
+	//FILE *fp = qfopen(fpath, "w");
+	FILE *fp = qfopen(fpath, "a");
 	file_printer_t fpt(fp);
 	mba->print(fpt);
 	qfclose(fp);
@@ -254,7 +255,7 @@ void CFUnflattener::CopyMinsnsToTailNoCond(mblock_t *src, mblock_t *&dst)
 	minsn_t *mbHead = src->head;
 	minsn_t *mbCurr = mbHead;
 
-	if (dst->tail->opcode == m_goto)
+	if (dst->tail != NULL && dst->tail->opcode == m_goto)
 		dst->remove_from_block(dst->tail);
 
 	do
@@ -268,6 +269,36 @@ void CFUnflattener::CopyMinsnsToTailNoCond(mblock_t *src, mblock_t *&dst)
 		debugmsg("[I] %d: tail is %s\n", dst->serial, buf);
 #endif
 	} while (mbCurr != NULL);
+}
+
+void CFUnflattener::CopyMblock(mbl_array_t *mba, DeferredGraphModifier &dgm, mblock_t *src, mblock_t *&dst)
+{
+	dst = mba->insert_block(mba->qty - 1);
+	//dst = mba->insert_block(mba->qty); // INTERR 50666 in the 2nd time call
+
+	// copy microcode instructions
+	CopyMinsnsToTailNoCond(src, dst);
+
+	// copy struct members
+	dst->flags = src->flags;
+	dst->start = src->start;
+	dst->end = src->end;
+	dst->type = src->type;
+
+	// copy mlist_t
+	dst->dead_at_start = src->dead_at_start;
+	dst->mustbuse = src->mustbuse;
+	dst->maybuse = src->maybuse;
+	dst->mustbdef = src->mustbdef;
+	dst->maybdef = src->maybdef;
+	dst->dnu = src->dnu;
+
+	// copy sval_t
+	dst->maxbsp = src->maxbsp;
+	dst->minbstkref = src->minbstkref;
+	dst->minbargref = src->minbargref;
+
+	// predset/succset wiil be modified later
 }
 
 void CFUnflattener::PostHandleTwoPredsNoCond(DeferredGraphModifier &dgm, mblock_t *&mb, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int actualGotoTarget, int actualJccTarget)
@@ -571,7 +602,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		if (mb->npred() < 2 && !cfi.bTrackingFirstBlocks)
 			{
 #if UNFLATTENVERBOSE
-			debugmsg("[E] The dispatcher predecessor %d that assigned non-numeric value had %d predecessors (<2). And the function has no jcc in the first blocks (continue)\n", iDispPred, mb->npred());
+			debugmsg("[I] The dispatcher predecessor %d at %#x that assigned non-numeric value had %d predecessors (<2). And the function has no jcc in the first blocks (continue)\n", iDispPred, mb->start, mb->npred());
 #endif
 			continue;
 		}
@@ -580,14 +611,13 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		mblock_t *nonJcc = NULL;
 		int actualGotoTarget, actualJccTarget;
 
+		/*
+		 TODO: bJcond code for HandleTwoPreds and goto n preds (waiting for workarounds from Hex-Rays)
+		 */
+
 		// Call the function that handles the case of a conditional assignment
 		// to the assignment variable (i.e., the flattened version of an
 		// if-statement).
-/*#if UNFLATTENVERBOSE
-		qstring tmp;
-		get_mreg_name(&tmp, opCopy->r, opCopy->size);
-		msg("[I] register %d (%s) is used in HandleTwoPreds to trace back (comparison variable or update variable?) \n", opCopy->r, tmp.c_str());
-#endif*/
 		if (HandleTwoPreds(mb, mbClusterHead, opCopy, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget))
 		{
 			// If it succeeded...
@@ -609,8 +639,13 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 			// target.
 			if (bJcond)
 			{
+				// just change the mb tail then continue
 				dgm.Replace(mb->serial, cfi.iDispatch, actualGotoTarget);
 				mb->tail->d.b = actualGotoTarget;
+#if UNFLATTENVERBOSE
+				msg("[E] HandleTwoPreds: The dispatcher predecessor = %d, the tail is conditional jump (waiting for workarounds from Hex-Rays)\n", mb->serial);
+#endif
+				continue;
 			}
 			else
 			{
@@ -632,7 +667,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 			{
 				minsn_t *mCopy = new minsn_t(*mbCurr);
 				if (bJcond && is_mcode_jcond(mbCurr->opcode))
-					dgm.ChangeGoto(nonJcc, mb->serial, actualJccTarget);
+					dgm.ChangeGoto(nonJcc, mb->serial, actualJccTarget);  // TODO: should be handled correctly in the future
 				else
 					nonJcc->insert_into_block(mCopy, nonJcc->tail);
 				mbCurr = mbCurr->next;
@@ -657,13 +692,14 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		// goto n preds
 		else if (endsWithJcc == NULL && nonJcc == NULL && mb->npred() >= 2)
 		{
+			mblock_t *mbLast = mba->get_mblock(mba->qty - 1);
+			//mblock_t *mbExit = mba->get_mblock(mba->qty); // mbLast == mbExit?
+
 			if (bJcond)
 			{
 #if UNFLATTENVERBOSE
-				msg("[E] goto n preds: The dispatcher predecessor = %d, the tail is conditional jump (not implemented yet)\n", mb->serial);
+				msg("[E] goto n preds: The dispatcher predecessor = %d, the tail is conditional jump (waiting for workarounds from Hex-Rays)\n", mb->serial);
 #endif
-				/*mblock_t *CopiedMb = mba->insert_block(mba->qty - 1);
-				mblock_t *CopiedMbFalse = mba->insert_block(mba->qty - 1);*/
 				continue;
 			}
 
@@ -679,13 +715,54 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 				int iDestPred = FindBlockTargetOrLastCopy(pred, mbClusterHeadForPred, opCopy, true, true);
 				if (iDestPred >= 0)
 				{
+					if (bJcond)
+					{
+						// the following code will not be executed
 #if UNFLATTENVERBOSE
-					msg("[I] goto n preds: The dispatcher predecessor = %d, pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
+						msg("[I] goto n preds: The dispatcher predecessor = %d (conditional jump true case), pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
 #endif
-					// copy: mb code to the pred tail
-					CopyMinsnsToTailNoCond(mb, pred);
-					dgm.ChangeGoto(pred, mb->serial, iDestPred);
-					pred->mark_lists_dirty();
+						if (i == 0)
+						{
+							// update mb
+							mb->tail->d.b = iDestPred;
+							dgm.Replace(mb->serial, cfi.iDispatch, iDestPred);
+						}
+						else
+						{
+							// copy the mb and mb+1 (false block) for each pred
+							mblock_t *mbCopy, *mbSuccFalseCopy;
+							mblock_t *mbSuccFalse = mba->get_mblock(mb->serial + 1);
+							CopyMblock(mba, dgm, mb, mbCopy);
+							CopyMblock(mba, dgm, mbSuccFalse, mbSuccFalseCopy);
+							if (mbCopy->serial + 1 != mbSuccFalseCopy->serial)
+							{
+#if UNFLATTENVERBOSE
+								msg("[E] goto n preds: copied blocks are not successive for a conditional jump. Abort. \n", mb->serial);
+#endif
+								continue;
+							}
+							// update pred
+							dgm.ChangeGoto(pred, mb->serial, mbCopy->serial);
+							pred->mark_lists_dirty();
+							// update mbCopy
+							mbCopy->tail->d.b = iDestPred;
+							dgm.Add(mbCopy->serial, mbCopy->serial + 1); // the order is important (add false case then true case, or INTERR 50860)
+							dgm.Add(mbCopy->serial, iDestPred);
+							// update mbSuccFalseCopy
+							for (int j = 0; j < mbSuccFalse->nsucc(); ++j)
+								dgm.Add(mbSuccFalseCopy->serial, mbSuccFalse->succ(j));
+						}
+					}
+					else
+					{
+#if UNFLATTENVERBOSE
+						msg("[I] goto n preds: The dispatcher predecessor = %d (goto), pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
+#endif
+						// copy: mb code to the pred tail
+						CopyMinsnsToTailNoCond(mb, pred);
+						dgm.ChangeGoto(pred, mb->serial, iDestPred);
+						pred->mark_lists_dirty();
+					}
 				}
 				// for flattened conditional predecessors
 				else if (pred->npred() == 2 && HandleTwoPreds(pred, mbClusterHeadForPred, opCopy, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget))
@@ -716,6 +793,18 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 #endif
 				}
 			}
+
+			if (bJcond)
+			{
+				// fix/append goto in the pred of the last block to pass control correctly
+				for (int i = 0; i < mbLast->npred(); ++i)
+				{
+					mblock_t *pred = mba->get_mblock(mbLast->pred(i));
+					dgm.ChangeGoto(pred, mbLast->serial, mba->qty - 1);
+					pred->mark_lists_dirty();
+				}
+			}
+
 			// ProcessErasures should be called after taking care of all preds
 			ProcessErasures(mba);
 			bDirtyChains = true;
@@ -762,7 +851,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		else
 		{
 #if UNFLATTENVERBOSE
-			msg("[E] end of loop: The dispatcher predecessor = %d, destination not found\n", mb->serial);
+			msg("[I] end of loop: The dispatcher predecessor = %d at %#x\n", mb->serial, mb->start);
 #endif
 		}
 	} // end for loop that unflattens all blocks

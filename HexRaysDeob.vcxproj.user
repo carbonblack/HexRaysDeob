@@ -3,7 +3,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ida32 Debug|x64'">
     <LocalDebuggerCommand>C:\work\tool\IDAx64\ida.exe</LocalDebuggerCommand>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerCommandArguments>-z20 -LZ:\haru\analysis\tics\temp\control_flow_flattening\samples\ida.log Z:\haru\analysis\tics\temp\control_flow_flattening\samples\f188936d2c8423cf064d6b8160769f21_dec2.idb</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>-z20 -LZ:\haru\analysis\tics\ongoing\apt10\samples\ida.log Z:\haru\analysis\tics\ongoing\apt10\samples\f188936d2c8423cf064d6b8160769f21_dec2.idb</LocalDebuggerCommandArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ida64 Debug|x64'">
     <LocalDebuggerCommand>c:\Program Files\IDA 7.2\ida64.exe</LocalDebuggerCommand>

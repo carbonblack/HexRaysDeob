@@ -19,15 +19,15 @@ static int debugmsg(const char *fmt, ...)
 	return 0;
 }
 
-// This method determines whether a given function is likely obfuscated. It 
+// This method determines whether a given function is likely obfuscated. It
 // does this by ensuring that:
-// 1) Some minimum number of comparisons are made against the "comparison 
+// 1) Some minimum number of comparisons are made against the "comparison
 //    variable"
 // 2) The constant values used in the comparisons are sufficiently entropic.
 bool JZInfo::ShouldBlacklist()
 {
-	// This check is pretty weak. I thought I could set the minimum number to 
-	// 6, but the pattern deobfuscators might eliminate some of them before 
+	// This check is pretty weak. I thought I could set the minimum number to
+	// 6, but the pattern deobfuscators might eliminate some of them before
 	// this function gets called.
 	if (nSeen < MIN_NUM_COMPARISONS)
 	{
@@ -50,7 +50,7 @@ bool JZInfo::ShouldBlacklist()
 				++iNumOnes;
 		}
 	}
-	
+
 	// Compute the percentage of 1-bits. Given that these constants seem to be
 	// created pseudorandomly, the percentage should be roughly 1/2.
 	float fEntropy = iNumBits == 0 ? 0.0 : (float)iNumOnes / (float(iNumBits));
@@ -75,7 +75,7 @@ bool JZInfo::ShouldBlacklist()
 
 
 // This class looks for jz/jg comparisons against constant values. For each
-// thing being compared, we use a JZInfo structure to collect the number of 
+// thing being compared, we use a JZInfo structure to collect the number of
 // times it's been used in a comparison, and a list of the values it was
 // compared against.
 struct JZCollector : public minsn_visitor_t
@@ -96,6 +96,10 @@ struct JZCollector : public minsn_visitor_t
 		if (curins->r.t != mop_n)
 			return 0;
 
+		// the operand should be register
+		if (curins->l.t != mop_r)
+			return 0;
+
 		int iFound = 0;
 		mop_t *thisMop = &curins->l;
 
@@ -113,7 +117,7 @@ struct JZCollector : public minsn_visitor_t
 			}
 			++idxFound;
 		}
-		
+
 		// If we didn't find it in the vector, create a new JZInfo structure
 		if (!iFound)
 		{
@@ -137,14 +141,14 @@ struct JZCollector : public minsn_visitor_t
 // This function finds the "first" block immediately before the control flow
 // flattening dispatcher begins. The logic is simple; start at the beginning
 // of the function, keep moving forward until the next block has more than one
-// predecessor. As it happens, this is where the assignment to the switch 
+// predecessor. As it happens, this is where the assignment to the switch
 // dispatch variable takes place, and that's mostly why we want it.
 // The information is recorded in the arguments iFirst and iDispatch.
 mblock_t *GetFirstBlock(mbl_array_t *mba, int &iFirst, int &iDispatch)
 {
 	// Initialise iFirst and iDispatch to erroneous values
 	iFirst = -1, iDispatch = -1;
-	
+
 	int iCurr = 0, iPred = 0;
 	int npred_max = MIN_NUM_COMPARISONS;
 	bool bFound = false;
@@ -168,15 +172,17 @@ mblock_t *GetFirstBlock(mbl_array_t *mba, int &iFirst, int &iDispatch)
 	if (iDispatch != -1)
 	{
 		iFirst = mba->get_mblock(iDispatch)->pred(0); // it's rough but works mostly
-		if (iFirst >= iDispatch) // or check the minimum number gently
+		mblock_t *mbFirst = mba->get_mblock(iFirst);
+		//if (iFirst >= iDispatch) // or check the minimum number gently
+		if (iFirst >= iDispatch || mbFirst->tail == NULL || is_mcode_jcond(mbFirst->tail->opcode)) // or check the minimum number gently
 		{
 			int iMinNum = iDispatch;
 			for (int i = 0; i < mba->get_mblock(iDispatch)->npred(); i++)
 			{
 				iCurr = mba->get_mblock(iDispatch)->pred(i);
-				//iPred = mba->get_mblock(iCurr)->pred(0);
-				//if (iCurr < iMinNum && mba->get_mblock(iPred)->tail != NULL && !is_mcode_jcond(mba->get_mblock(iPred)->tail->opcode))
-				if (iCurr < iMinNum)
+				mblock_t *mbCurr = mba->get_mblock(iCurr);
+				//if (iCurr < iMinNum)
+				if (iCurr < iMinNum && mbCurr->tail != NULL && !is_mcode_jcond(mbCurr->tail->opcode))
 					iMinNum = iCurr;
 			}
 			iFirst = iMinNum;
@@ -211,14 +217,14 @@ mblock_t *GetFirstBlock(mbl_array_t *mba, int &iFirst, int &iDispatch)
 	else
 	{
 #if UNFLATTENVERBOSE
-		debugmsg("[E] Dispatcher block could not be found \n");
+		debugmsg("[E] First block could not be found \n");
 #endif
 		return NULL;
 	}
 }
 
-// This class is used to find all variables that have 32-bit numeric values 
-// assigned to them in the first block (as well as the values that are 
+// This class is used to find all variables that have 32-bit numeric values
+// assigned to them in the first block (as well as the values that are
 // assigned to them).
 struct BlockInsnAssignNumberExtractor : public minsn_visitor_t
 {
@@ -239,17 +245,17 @@ struct BlockInsnAssignNumberExtractor : public minsn_visitor_t
 // dispatch number. If it uses two, one of them is the "update" variable, whose
 // contents will be copied into the "comparison" variable in the first dispatch
 // block. This class is used to locate the "update" variable, by simply looking
-// for a variable whose contents are copied into the "comparison" variable, 
+// for a variable whose contents are copied into the "comparison" variable,
 // which must have had a number assigned to it in the first block.
 struct HandoffVarFinder : public minsn_visitor_t
 {
 	// We're looking for assignments to this variable
 	mop_t *m_ComparisonVar;
-	
+
 	// These are the numeric assignments from the first block
 	std::vector<std::pair<mop_t *, uint64> > &m_SeenAssignments;
-	
-	// This information is generated by this class. Namely, it's a list of 
+
+	// This information is generated by this class. Namely, it's a list of
 	// variables that are seen copied into the comparison variable, as well
 	// as a count of the number of times it is copied.
 	std::vector<std::pair<mop_t *, int> > m_SeenCopies;
@@ -275,7 +281,7 @@ struct HandoffVarFinder : public minsn_visitor_t
 		{
 			if (equal_mops_ignore_size(curins->l, *as.first))
 			{
-				// If we found a copy into our comparison variable from a 
+				// If we found a copy into our comparison variable from a
 				// variable that was assigned to a constant in the first block,
 				// add it to the vector (or increment its counter if it was
 				// already there).
@@ -321,12 +327,14 @@ struct JZMapper : public minsn_visitor_t
 	mop_t *m_SubCompareVar;
 	mop_t *m_AssignVar;
 	int m_DispatchBlockNo;
+	int m_FirstBlockNo;
 	//JZMapper(mop_t *mc, mop_t *ma, int iFirst, std::map<uint64, int> &map, std::map<int, uint64> &map2) :
-	JZMapper(mop_t *mc, mop_t *mc_sub, mop_t *ma, int iFirst, std::map<uint64, int> &map, std::map<int, uint64> &map2, std::map<uint64, ea_t> &map3, std::map<ea_t, uint64> &map4) :
+	JZMapper(mop_t *mc, mop_t *mc_sub, mop_t *ma, int iDispatch, int iFirst, std::map<uint64, int> &map, std::map<int, uint64> &map2, std::map<uint64, ea_t> &map3, std::map<ea_t, uint64> &map4) :
 		m_CompareVar(mc),
 		m_SubCompareVar(mc_sub),
 		m_AssignVar(ma),
-		m_DispatchBlockNo(iFirst),
+		m_DispatchBlockNo(iDispatch),
+		m_FirstBlockNo(iFirst),
 		m_KeyToBlock(map),
 		//m_BlockToKey(map2) {};
 		m_BlockToKey(map2),
@@ -346,7 +354,12 @@ struct JZMapper : public minsn_visitor_t
 		if (!equal_mops_ignore_size(*m_CompareVar, curins->l) && mba->maturity != MMAT_DEOB_MAP)
 		{
 			// ... or, if it's the dispatch block, possibly the assignment variable ...
-			if (blk->serial != m_DispatchBlockNo || !equal_mops_ignore_size(*m_AssignVar, curins->l))
+			//if (blk->serial != m_DispatchBlockNo || !equal_mops_ignore_size(*m_AssignVar, curins->l))
+			// consider m_AssignVar & 0x3fffffff case
+			mop_t *m_AssignVarAnd = NULL;
+			if (curins->l.is_insn() && curins->l.d->opcode == m_and)
+				m_AssignVarAnd = &curins->l.d->l;
+			if (blk->serial != m_DispatchBlockNo || (!equal_mops_ignore_size(*m_AssignVar, curins->l) && (m_AssignVarAnd == NULL || !equal_mops_ignore_size(*m_AssignVar, *m_AssignVarAnd))))
 			{
 				// or if it's sub-comparison var, include the map
 				if (m_SubCompareVar == NULL)
@@ -391,9 +404,28 @@ struct JZMapper : public minsn_visitor_t
 		}
 		else // later maturity level
 		{
+			// check duplicated block comparison variable for multiple dispatchers
+			if (m_KeyToBlock.count(keyVal))
+			{
+				if (blockNo < m_FirstBlockNo || blockNo > m_KeyToBlock[keyVal])
+				{
+#if UNFLATTENVERBOSE
+					const char *matStr = MicroMaturityToString(mba->maturity);
+					debugmsg("[I] %s: Ignoring %08lx -> block ID %d due to multiple dispatchers (the start ea %08lx)\n", matStr, (uint32)keyVal, blockNo, mba->get_mblock(blockNo)->start);
+#endif
+					return 0;
+				}
+				else
+				{
+					// preparation before overwriting the map
+					int old_blockNo = m_KeyToBlock[keyVal];
+					m_BlockToKey.erase(old_blockNo);
+				}
+			}
+
 #if UNFLATTENVERBOSE
 			const char *matStr = MicroMaturityToString(mba->maturity);
-			debugmsg("[I] %s: Inserting %08lx -> block ID %d into map\n", matStr, (uint32)keyVal, blockNo);
+			debugmsg("[I] %s: Inserting %08lx -> block ID %d into map (the start ea %08lx)\n", matStr, (uint32)keyVal, blockNo, mba->get_mblock(blockNo)->start);
 #endif
 			m_KeyToBlock[keyVal] = blockNo;
 			m_BlockToKey[blockNo] = keyVal;
@@ -412,7 +444,7 @@ array_of_bitsets *ComputeDominators(mbl_array_t *mba)
 	// Use Hex-Rays' handy array_of_bitsets to represent dominators
 	array_of_bitsets *domInfo = new array_of_bitsets;
 	domInfo->resize(iNumBlocks);
-	
+
 	// Per the algorithm, initialize each block to be dominated by every block
 	for (auto &bs : *domInfo)
 		bs.fill_with_ones(iNumBlocks - 1);
@@ -421,7 +453,7 @@ array_of_bitsets *ComputeDominators(mbl_array_t *mba)
 	domInfo->front().clear();
 	domInfo->front().add(0);
 
-	// Now we've got a standard, not-especially-optimized dataflow analysis 
+	// Now we've got a standard, not-especially-optimized dataflow analysis
 	// fixedpoint computation...
 	bool bChanged;
 	do
@@ -433,11 +465,11 @@ array_of_bitsets *ComputeDominators(mbl_array_t *mba)
 			// Grab its current dataflow value and copy it
 			bitset_t &bsCurr = domInfo->at(i);
 			bitset_t bsBefore(bsCurr);
-			
+
 			// Get that block from the graph
 			mblock_t *blockI = mba->get_mblock(i);
-			
-			// Iterate over its predecessors, intersecting their dataflow 
+
+			// Iterate over its predecessors, intersecting their dataflow
 			// values against this one's values
 			for (int j = 0; j < blockI->npred(); ++j)
 				bsCurr.intersect(domInfo->at(blockI->pred(j)));
@@ -449,35 +481,35 @@ array_of_bitsets *ComputeDominators(mbl_array_t *mba)
 			// need another iteration
 			bChanged |= bsBefore != bsCurr;
 		}
-	} 
+	}
 	// Keep going until the dataflow information stops changing
 	while (bChanged);
 
-	// The dominator information has been computed. Now we're going to derive 
+	// The dominator information has been computed. Now we're going to derive
 	// some information from it. Namely, the current representation tells us,
 	// for each block, which blocks dominate it. We want to know, instead, for
-	// each block, which blocks are dominated by it. This is a simple 
+	// each block, which blocks are dominated by it. This is a simple
 	// transformation; for each block b and dominator d, update the information
 	// for d to indicate that it dominates b.
-	
+
 	// Create a new array_of_bitsets
 	array_of_bitsets *domInfoOutput = new array_of_bitsets;
 	domInfoOutput->resize(iNumBlocks);
-	
+
 	// Iterate over each block
 	for (int i = 0; i < iNumBlocks; ++i)
 	{
 		// Get the dominator information for this block (b)
 		bitset_t &bsCurr = domInfo->at(i);
-		
+
 		// For each block d that dominates this one, mark that d dominates b
 		for (auto it = bsCurr.begin(); it != bsCurr.end(); bsCurr.inc(it))
 			domInfoOutput->at(*it).add(i);
 	}
-	
+
 	// Don't need the original dominator information anymore; get rid of it
 	delete domInfo;
-	
+
 	// Just return the inverted dominator information
 	return domInfoOutput;
 }
@@ -544,7 +576,7 @@ int CFFlattenInfo::FindBlockByKeyFromEA(uint64 key, mbl_array_t *mba)
 	return serial;
 }
 
-// This function computes all of the preliminary information needed for 
+// This function computes all of the preliminary information needed for
 // unflattening.
 bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 {
@@ -555,17 +587,17 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 	if (g_BlackList.find(mba->entry_ea) != g_BlackList.end())
 		return false;
 
-	// There's also a separate whitelist for functions that were previously 
+	// There's also a separate whitelist for functions that were previously
 	// seen to be obfuscated.
 	bool bWasWhitelisted = g_WhiteList.find(mba->entry_ea) != g_WhiteList.end();
 
-	// Look for the variable that was used in the largest number of jz/jg 
+	// Look for the variable that was used in the largest number of jz/jg
 	// comparisons against a constant. This is our "comparison" variable.
 	JZCollector jzc;
 	mba->for_all_topinsns(jzc);
 	if (jzc.m_nMaxJz < 0)
 	{
-		// If there were no comparisons and we haven't seen this function 
+		// If there were no comparisons and we haven't seen this function
 		// before, blacklist it.
 #if UNFLATTENVERBOSE
 		debugmsg("[I] No comparisons seen; failed\n");
@@ -625,19 +657,18 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 		//for (minsn_t *p = mb_dispatch->head; p != NULL; p = p->next)
 		{
 			mlist_t def = mb_dispatch->build_def_list(*p, MAY_ACCESS | FULL_XDSU);
-			//if ((def.includes(ml) || (p->l.t == mop_r && p->l.r == op->r)) && sc.nSeen > MIN_NUM_COMPARISONS &&
-				//(p->opcode == m_jz || p->opcode == m_jg || p->opcode == m_jnz || p->opcode == m_jle || p->opcode == m_and))
-			if ((def.includes(ml) || (p->l.t == mop_r && p->l.r == op->r)) && sc.nSeen > MIN_NUM_COMPARISONS)
+			//if ((def.includes(ml) || (p->l.t == mop_r && p->l.r == op->r)) && sc.nSeen > MIN_NUM_COMPARISONS)
+			if (sc.nSeen > MIN_NUM_COMPARISONS)
 			{
-				if (p->opcode == m_jz || p->opcode == m_jg || p->opcode == m_jnz || p->opcode == m_jle || p->opcode == m_and)
+				if (p->l.t == mop_r && p->l.r == op->r)
 				{
+					if (p->opcode == m_jz || p->opcode == m_jg || p->opcode == m_jnz || p->opcode == m_jle)
+						opMaxMoreLikely = op;
+					else if (opMaxMoreLikely != NULL && p->opcode == m_mov && p->d.t == mop_r)
+						opMaxSub = &p->d;
+				}
+				else if (p->d.t == mop_r && p->d.r == op->r && p->opcode == m_and)
 					opMaxMoreLikely = op;
-					//break;
-				}
-				else if (opMaxMoreLikely != NULL && p->opcode == m_mov && p->d.t == mop_r)
-				{
-					opMaxSub = &p->d;
-				}
 			}
 		}
 		if (opMaxMoreLikely != NULL)
@@ -655,8 +686,8 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 	}
 
 	// Get all variables assigned to numbers in the first block. If we find the
-	// comparison variable in there, then the assignment and comparison 
-	// variables are the same. If we don't, then there are two separate 
+	// comparison variable in there, then the assignment and comparison
+	// variables are the same. If we don't, then there are two separate
 	// variables.
 	BlockInsnAssignNumberExtractor fbe;
 
@@ -683,9 +714,10 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 	// case code
 	mop_t *localOpAssigned;
 
-	// If the "comparison" variable was assigned a number in the first block, 
+	// If the "comparison" variable was assigned a number in the first block,
 	// then the function is only using one variable, not two, for dispatch.
-	if (bFound)
+	//if (bFound)
+	if (bFound && mb_dispatch->head != NULL && mb_dispatch->head->opcode != m_and) // stricter check for detecting update variable in first blocks + flatten blocks combination
 		localOpAssigned = opMax;
 
 	// Otherwise, look for assignments of one of the variables assigned a
@@ -708,7 +740,7 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 			return false;
 		}
 
-		// If only one variable (X) assigned a number in the first block was 
+		// If only one variable (X) assigned a number in the first block was
 		// ever copied into the comparison variable, then X is our "assignment"
 		// variable.
 		localOpAssigned = hvf.m_SeenCopies[0].first;
@@ -763,7 +795,7 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 
 	// Extract the key-to-block mapping for each JZ against the comparison
 	// variable
-	JZMapper jzm(opCompared, opSubCompared, localOpAssigned, iDispatch, m_KeyToBlock, m_BlockToKey, m_KeyToEA, m_EAToKey);
+	JZMapper jzm(opCompared, opSubCompared, localOpAssigned, this->iDispatch, this->iFirst, m_KeyToBlock, m_BlockToKey, m_KeyToEA, m_EAToKey);
 	mba->for_all_topinsns(jzm);
 	if (mba->maturity == MMAT_DEOB_MAP)
 		// abort
@@ -775,20 +807,20 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 	// Compute the dominator information for this function and stash it
 	array_of_bitsets *ab = ComputeDominators(mba);
 	m_DomInfo = ab;
-	
+
 	// Compute some more information from the dominators. Basically, once the
-	// control flow dispatch switch has transferred control to the function's 
-	// code, there might be multiple basic blocks that can execute before 
+	// control flow dispatch switch has transferred control to the function's
+	// code, there might be multiple basic blocks that can execute before
 	// control goes back to the switch statement. For all of those blocks, we
-	// want to know the "first" block as part of that region of the graph, 
-	// i.e., the one targeted by a jump out of the control flow dispatch 
+	// want to know the "first" block as part of that region of the graph,
+	// i.e., the one targeted by a jump out of the control flow dispatch
 	// switch.
-	
+
 	// Allocate an array mapping each basic block to the block that dominates
 	// it and was targeted by the control flow switch.
 	int *DominatedClusters = new int[mba->qty];
 	memset(DominatedClusters, 0xFF, sizeof(int)*mba->qty);
-	
+
 	// For each block/key pair (the targets of the control flow switch)
 	for (auto bk : m_EAToKey)
 	{
@@ -803,22 +835,23 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 	for (auto bk : m_BlockToKey)
 	{
 		int i = bk.first;
-		// For each block dominated by this control flow switch target, mark 
+		// For each block dominated by this control flow switch target, mark
 		// that this block its the beginning of its cluster.
 		for (auto it = ab->at(i).begin(); it != ab->at(i).end(); ab->at(i).inc(it))
 			DominatedClusters[*it] = i;
 	}
-	
+
 	// Save that information off.
 	m_DominatedClusters = DominatedClusters;
 
 	// Check if the first blocks may contain block update variables for flattened if-else statement blocks
 	//if (this->iFirst % 2 == 1 && this->iFirst > 2 && is_mcode_jcond(mba->get_mblock(1)->tail->opcode))
-	if (this->iFirst > 2 && is_mcode_jcond(mba->get_mblock(1)->tail->opcode))
+	//if (this->iFirst > 2 && is_mcode_jcond(mba->get_mblock(1)->tail->opcode))
+	if (this->iFirst > 2 && mba->get_mblock(iFirst - 2)->tail != NULL && is_mcode_jcond(mba->get_mblock(iFirst - 2)->tail->opcode))
 			this->bTrackingFirstBlocks = true;
 	else
 		this->bTrackingFirstBlocks = false;
-	
+
 	// Ready to go!
 	return true;
 }
