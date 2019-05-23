@@ -285,9 +285,9 @@ struct ObfCompilerOptimizer : public optinsn_t
 	}
 
 	// This function replaces read-only initialized global variable patterns with 0 in m_setl/m_jl/m_jge, m_seto (MMAT_CALLS or later only)
-	// either: dword_73FBB588 >= 10
-	// or:     dword_73FBB588 < 10
-	int pat_InitedVarCond10(minsn_t *&ins, mblock_t *blk)
+	// either: dword_73FBB588 >= immediate value (e.g., 10, 9)
+	// or:     dword_73FBB588 < immediate value (e.g., 10, 9)
+	int pat_InitedVarCondImm(minsn_t *&ins, mblock_t *blk)
 	{
 		if (ins->opcode == m_seto && (blk == NULL || blk->mba->maturity <= MMAT_LOCOPT))
 			return 0;
@@ -334,7 +334,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 	// This function replaces read-only initialized global variable patterns with 0 in m_sets (MMAT_CALLS or later only)
 	// either: dword_73FBB588 - 10 >= 0
 	// or:     dword_10020CE4 - 10 < 0
-	int pat_InitedVarSub10Cond0(minsn_t *ins, mblock_t *blk)
+	int pat_InitedVarSubImmCond0(minsn_t *ins, mblock_t *blk)
 	{
 		if (blk == NULL || blk->mba->maturity <= MMAT_LOCOPT)
 			return 0;
@@ -344,7 +344,7 @@ struct ObfCompilerOptimizer : public optinsn_t
 			return 0;
 		insSub = ins->l.d;
 
-		int ret = pat_InitedVarCond10(insSub, blk);
+		int ret = pat_InitedVarCondImm(insSub, blk);
 		if (ret && insSub->opcode == m_nop)
 		{
 			ins->opcode = m_mov;
@@ -807,10 +807,10 @@ struct ObfCompilerOptimizer : public optinsn_t
 		case m_jl:
 		case m_jge:
 		case m_seto: // cause INTERR 50862 -> replace in later maturity level
-			iLocalRetVal = pat_InitedVarCond10(ins, blk); // added
+			iLocalRetVal = pat_InitedVarCondImm(ins, blk); // added
 			break;
 		case m_sets:
-			iLocalRetVal = pat_InitedVarSub10Cond0(ins, blk); // added
+			iLocalRetVal = pat_InitedVarSubImmCond0(ins, blk); // added
 			break;
 		case m_mov:
 			//iLocalRetVal = pat_InitedVarMov(ins); data-flow tracking required
@@ -823,10 +823,10 @@ struct ObfCompilerOptimizer : public optinsn_t
 				{
 					if (curins->opcode == m_setl)
 					{
-						if (curins->l.t != mop_r && curins->r.t != mop_n && curins->r.nnn->value != 0xA)
+						if (curins->l.t != mop_r || curins->r.t != mop_n)
 							return 0;
 						mop_t op_r = curins->l; // curins->d is mop_z(0)
-						int ret = othis->pat_InitedVarCond10(curins, mb);
+						int ret = othis->pat_InitedVarCondImm(curins, mb);
 						// IDA automatically optimizes setl (0 < #0xA) => nop
 						// nop is not propagatable because it does not generate any value (INTERR 50800)
 						// replace nop with e.g., mov 1, cl

@@ -1,5 +1,5 @@
 #include <memory>
-#define USE_DANGEROUS_FUNCTIONS 
+#define USE_DANGEROUS_FUNCTIONS
 #include <hexrays.hpp>
 #include "HexRaysUtil.hpp"
 
@@ -183,19 +183,19 @@ public:
 	{
 		mbl_array_t *mba = *si->mba;
 		m_MG.Build(top);
-		
+
 		m_Title.cat_sprnt("Microinstruction Graph - %a[%s]/%d:%d", mba->entry_ea, MicroMaturityToString(si->mat), nBlock, nSerial);
 		m_TW = create_empty_widget(m_Title.c_str());
 		netnode id;
 		id.create();
-		
+
 		m_GVName.cat_sprnt("microins_%a_%s_%d_%d", mba->entry_ea, MicroMaturityToString(si->mat), nBlock, nSerial);
 		m_GV = create_graph_viewer(m_GVName.c_str(), id, migr_callback, this, 0, m_TW);
 		activate_widget(m_TW, true);
 #if IDA_SDK_VERSION == 710
-		display_widget(m_TW, WOPN_TAB | WOPN_MENU);
+		display_widget(m_TW, WOPN_MENU);
 #elif IDA_SDK_VERSION >= 720
-		display_widget(m_TW, WOPN_TAB);
+		display_widget(m_TW, 0);
 #endif
 		viewer_fit_window(m_GV);
 		return true;
@@ -274,14 +274,14 @@ public:
 		TWidget *tw = create_empty_widget(m_Title.c_str());
 		netnode id;
 		id.create();
-		
+
 		m_GVName.cat_sprnt("microblkgraph_%a_%s", mba->entry_ea, MicroMaturityToString(si->mat));
 		graph_viewer_t *gv = create_graph_viewer(m_GVName.c_str(), id, mgr_callback, this, 0, tw);
 		activate_widget(tw, true);
 #if IDA_SDK_VERSION == 710
-		display_widget(tw, WOPN_TAB | WOPN_MENU);
+		display_widget(tw, WOPN_MENU);
 #elif IDA_SDK_VERSION >= 720
-		display_widget(tw, WOPN_TAB);
+		display_widget(tw, 0);
 #endif
 		viewer_fit_window(gv);
 		return true;
@@ -523,6 +523,6 @@ void ShowMicrocodeExplorer()
 		NULL); // parent
 
 	hook_to_notification_point(HT_UI, ui_callback, si);
-	display_widget(si->cv, WOPN_TAB | WOPN_RESTORE);
+	display_widget(si->cv, WOPN_RESTORE);
 }
 

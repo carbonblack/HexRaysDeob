@@ -1,6 +1,7 @@
 #include <hexrays.hpp>
 #include "HexRaysUtil.hpp"
 #include "TargetUtil.hpp"
+#include "Config.hpp"
 
 static int debugmsg(const char *fmt, ...)
 {
@@ -18,19 +19,19 @@ void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest)
 {
 	assert(blk->tail != NULL);
 
-	// Allocate a new instruction, using the tail as a template
-	minsn_t *newGoto = new minsn_t(*blk->tail);
+	// Allocate a new instruction, using the tail address
+	minsn_t *newGoto = new minsn_t(blk->tail->ea);
 
 	// Create a goto instruction to the specified block
 	newGoto->opcode = m_goto;
 	newGoto->l.t = mop_b;
 	newGoto->l.b = iBlockDest;
-	newGoto->l.size = NOSIZE;
-	newGoto->r.erase();
-	newGoto->d.erase();
 
 	// Add it onto the block
 	blk->insert_into_block(newGoto, blk->tail);
+#if UNFLATTENVERBOSE
+    msg("### %d: added goto %d\n", blk->serial, iBlockDest);
+#endif
 }
 
 // For a block with a single successor, change its target from some old block
@@ -48,6 +49,9 @@ void ChangeSingleTarget(mblock_t *blk, int iOldTarget, int iNewTarget)
 
 	// Remove this block from the predecessor set of the old target
 	mba->get_mblock(iOldTarget)->predset.del(blk->serial);
+#if UNFLATTENVERBOSE
+    msg("### %d: fixed outset %d\n", blk->serial, iNewTarget);
+#endif
 }
 
 // Reverse engineered from hexrays.dll (though it's obvious). Basically: does
@@ -87,7 +91,7 @@ int RemoveSingleGotos(mbl_array_t *mba)
 		minsn_t *m2 = b->head; // to prevent INTERR 51919?
 
 		// Is the first non-assert instruction a goto?
-		if (m2 == NULL || m2->opcode != m_goto)
+		if (m2 == NULL || m2->opcode != m_goto || m2->l.t != mop_b)
 			continue;
 
 		// If it was a goto, record the destination block number
@@ -245,12 +249,18 @@ bool SplitMblocksByJccEnding(mblock_t *pred1, mblock_t *pred2, mblock_t *&endsWi
 // Plan to remove an edge from src->dest
 void DeferredGraphModifier::Remove(int src, int dest)
 {
+#if UNFLATTENVERBOSE
+    msg("### plan del edge %d -> %d\n", src, dest);
+#endif
 	m_RemoveEdges.push_back(std::pair<int, int>(src, dest));
 }
 
 // Plan to add an edge from src->dest
 void DeferredGraphModifier::Add(int src, int dest)
 {
+#if UNFLATTENVERBOSE
+    msg("### plan add edge %d -> %d\n", src, dest);
+#endif
 	m_AddEdges.push_back(std::pair<int, int>(src, dest));
 }
 
@@ -305,6 +315,9 @@ int DeferredGraphModifier::Apply(mbl_array_t *mba)
 // structure later to reflect these changes.
 bool DeferredGraphModifier::ChangeGoto(mblock_t *blk, int iOld, int iNew)
 {
+	// can not change a block that ends with a conditional jump
+	QASSERT(99000, blk->tail == NULL || !is_mcode_jcond(blk->tail->opcode));
+
 	bool bChanged = true;
 	int iDispPred = blk->serial;
 

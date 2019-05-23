@@ -151,10 +151,15 @@ int CFUnflattener::FindBlockTargetOrLastCopy(mblock_t *mb, mblock_t *mbClusterHe
 
 		// If we couldn't find the block, that's bad news.
 		if (iDestNo < 0)
+		{
+#if UNFLATTENVERBOSE
 			msg("[E] Block %d assigned unknown key %llx to assigned var\n", mb->serial, opNum->nnn->value);
-
+#endif
+			return -1;
+		}
 		// Otherwise, we win! Return the block number.
 		else
+		{
 #if UNFLATTENVERBOSE
 			if (cfi.bOpAndAssign)
 				msg("[I] Next target resolved: %d (cluster head %d) -> %d (%x & %x = %x)\n", mb->serial, iClusterHead, iDestNo, opNum->nnn->value, cfi.OpAndImm, theImm);
@@ -162,6 +167,7 @@ int CFUnflattener::FindBlockTargetOrLastCopy(mblock_t *mb, mblock_t *mbClusterHe
 				msg("[I] Next target resolved: %d (cluster head %d) -> %d (%x)\n", mb->serial, iClusterHead, iDestNo, theImm);
 #endif
 			return iDestNo;
+		}
 	}
 
 	// Negative return code indicates failure.
@@ -255,8 +261,15 @@ void CFUnflattener::CopyMinsnsToTailNoCond(mblock_t *src, mblock_t *&dst)
 	minsn_t *mbHead = src->head;
 	minsn_t *mbCurr = mbHead;
 
+  // can not append to a block that ends with a conditional jump
+  QASSERT(99000, dst->tail == NULL || !is_mcode_jcond(dst->tail->opcode));
+
 	if (dst->tail != NULL && dst->tail->opcode == m_goto)
-		dst->remove_from_block(dst->tail);
+  {
+    minsn_t *delme = dst->tail;
+		dst->remove_from_block(delme);
+    delete delme;
+  }
 
 	do
 	{
@@ -266,13 +279,15 @@ void CFUnflattener::CopyMinsnsToTailNoCond(mblock_t *src, mblock_t *&dst)
 
 #if UNFLATTENVERBOSE
 		mcode_t_to_string(dst->tail, buf, sizeof(buf));
-		debugmsg("[I] %d: tail is %s\n", dst->serial, buf);
+		debugmsg("[I] CopyMinsnsToTailNoCond: src block %d -> dst block %d, copied instruction is %s\n", src->serial, dst->serial, buf);
 #endif
 	} while (mbCurr != NULL);
 }
 
-void CFUnflattener::CopyMblock(mbl_array_t *mba, DeferredGraphModifier &dgm, mblock_t *src, mblock_t *&dst)
+void CFUnflattener::CopyMblock(DeferredGraphModifier &dgm, mblock_t *src, mblock_t *&dst)
 {
+	mbl_array_t *mba = src->mba;
+
 	dst = mba->insert_block(mba->qty - 1);
 	//dst = mba->insert_block(mba->qty); // INTERR 50666 in the 2nd time call
 
@@ -301,56 +316,134 @@ void CFUnflattener::CopyMblock(mbl_array_t *mba, DeferredGraphModifier &dgm, mbl
 	// predset/succset wiil be modified later
 }
 
-void CFUnflattener::PostHandleTwoPredsNoCond(DeferredGraphModifier &dgm, mblock_t *&mb, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int actualGotoTarget, int actualJccTarget)
+bool CFUnflattener::CopyAndConnectConditionalBlocksToPred(DeferredGraphModifier &dgm, mblock_t *mb, mblock_t *&pred, int iDest)
 {
+	mbl_array_t *mba = mb->mba;
+
+	// copy the mb and mb+1 (false block) for each pred
+	mblock_t *mbCopy, *mbSuccFalseCopy;
+	mblock_t *mbSuccFalse = mba->get_mblock(mb->serial + 1);
+	CopyMblock(dgm, mb, mbCopy);
+	CopyMblock(dgm, mbSuccFalse, mbSuccFalseCopy);
+
+	if (mbCopy->serial + 1 != mbSuccFalseCopy->serial)
+	{
 #if UNFLATTENVERBOSE
-	msg("[I] goto n preds: pred to the dispatcher predecessor = %d, actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, actualGotoTarget, actualJccTarget);
+		msg("[E] CopyAndConnectConditionalBlocksToPred: copied blocks are not successive for a conditional jump. Abort. \n", mb->serial);
 #endif
+		return false;
+	}
 
-	dgm.ChangeGoto(mb, mb->succ(0), actualGotoTarget);
-	mb->mark_lists_dirty();
+	// update instructions/CFGs
+	// pred
+	dgm.ChangeGoto(pred, mb->serial, mbCopy->serial);
+	pred->mark_lists_dirty();
+	// mbCopy
+	mbCopy->tail->d.b = iDest;
+	dgm.Add(mbCopy->serial, mbCopy->serial + 1); // the order is important (add false case then true case, or INTERR 50860)
+	dgm.Add(mbCopy->serial, iDest);
+	// mbSuccFalseCopy
+	for (int j = 0; j < mbSuccFalse->nsucc(); ++j)
+		dgm.Add(mbSuccFalseCopy->serial, mbSuccFalse->succ(j));
 
-	// 2nd copy: the pred code to nonJcc tail
-	CopyMinsnsToTailNoCond(mb, nonJcc);
-
-	dgm.Replace(nonJcc->serial, mb->serial, actualJccTarget);
-	nonJcc->tail->l.b = actualJccTarget;
-	nonJcc->mark_lists_dirty();
+	return true;
 }
 
-bool CFUnflattener::FindJccInFirstBlocks(mbl_array_t *mba, mop_t *opCopy, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int &actualGotoTarget, int &actualJccTarget)
-{
-	mblock_t *mbTheFirst = mba->get_mblock(1);
+void CFUnflattener::DisconnectBlockFromPred(DeferredGraphModifier &dgm, mblock_t *mb, mblock_t *&pred, int iDest) {
+	// append mb code to the pred tail
+	CopyMinsnsToTailNoCond(mb, pred);
 
-	// algorithm 1 for multiple block update variables
-	for (int iCurrent = 1; iCurrent < cfi.iFirst; iCurrent += 2)
+	// update pred instruction/CFG
+	dgm.ChangeGoto(pred, mb->serial, iDest);
+	pred->mark_lists_dirty();
+}
+
+bool CFUnflattener::PostHandleTwoPreds(DeferredGraphModifier &dgm, mblock_t *&mb, int actualGotoTargetOld, int actualGotoTargetNew, mblock_t *&nonJcc, int actualJccTarget)
+{
+	// handle endWithJcc's destination (actualGotoTarget)
+	if (is_mcode_jcond(mb->tail->opcode))
+	{
+		// we can not change the jump target to be the next block
+		if (actualGotoTargetNew == mb->serial + 1)
+		{
+#if UNFLATTENVERBOSE
+			msg("[E] PostHandleTwoPreds: actualGotoTarget is matched with the false case of the dispatcher predecessor = %d. Abort.", mb->serial);
+#endif
+			return false;
+		}
+		dgm.Replace(mb->serial, actualGotoTargetOld, actualGotoTargetNew);
+		mb->tail->d.b = actualGotoTargetNew;
+	}
+	else
+	{
+		dgm.ChangeGoto(mb, actualGotoTargetOld, actualGotoTargetNew);
+		mb->mark_lists_dirty();
+	}
+
+	// this is not flattened if-statement blocks. Abort.
+	if (actualGotoTargetNew == actualJccTarget)
+	{
+#if UNFLATTENVERBOSE
+		msg("[I] PostHandleTwoPreds: actualGotoTarget is matched with actualJccTarget in the dispatcher predecessor = %d. Abort.", mb->serial);
+#endif
+		return false;
+	}
+
+	// handle nonJcc
+	if (is_mcode_jcond(mb->tail->opcode))
+	{
+		// copy the conditional blocks for nonJcc
+		CopyAndConnectConditionalBlocksToPred(dgm, mb, nonJcc, actualJccTarget);
+	}
+	else
+	{
+		// change the destination from mb->serial to actualJccTarget
+		DisconnectBlockFromPred(dgm, mb, nonJcc, actualJccTarget);
+	}
+
+	return true;
+}
+
+bool CFUnflattener::FindJccInFirstBlocks(mbl_array_t *mba, mop_t *&opCopy, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int &actualGotoTarget, int &actualJccTarget)
+{
+	actualGotoTarget = actualJccTarget = -1;
+
+	// search assignment for endsWithJcc (the assignment can be done in every endsWithJcc blocks)
+	for (int iCurrent = cfi.iFirst; iCurrent > 0; iCurrent -= 2)
 	{
 		endsWithJcc = mba->get_mblock(iCurrent);
-		if (is_mcode_jcond(endsWithJcc->tail->opcode))
+		if (iCurrent == cfi.iFirst || is_mcode_jcond(endsWithJcc->tail->opcode))
 		{
-			// The false case block serial of conditional jumps should be iCurrent + 1. See INTERR 50860 in verify.cpp
-			nonJcc = mba->get_mblock(iCurrent + 1);
-			actualJccTarget = FindBlockTargetOrLastCopy(nonJcc, nonJcc, opCopy, false, false);
-			if (actualJccTarget < 0)
-				continue;
-			// multiple block update variables looks initialized in the first block (ID=1)
-			actualGotoTarget = FindBlockTargetOrLastCopy(mbTheFirst, mbTheFirst, opCopy, false, false);
-			if (actualGotoTarget < 0)
-				// just to be safe
-				actualGotoTarget = FindBlockTargetOrLastCopy(endsWithJcc, endsWithJcc, opCopy, false, false);
+			actualGotoTarget = FindBlockTargetOrLastCopy(endsWithJcc, endsWithJcc, opCopy, false, false);
 			if (actualGotoTarget >= 0)
-				return true;
+				break;
+			else
+			{
+				mop_t *opCopy2nd = m_DeferredErasuresLocal.back().opCopy;
+				if (!equal_mops_ignore_size(*opCopy, *opCopy2nd)) {
+#if UNFLATTENVERBOSE
+					msg("[I] FindJccInFirstBlocks: %s assigned to %s at %08lx\n", mopt_t_to_string(opCopy2nd->t), mopt_t_to_string(opCopy->t), m_DeferredErasuresLocal.back().insMov->ea);
+#endif
+					opCopy = opCopy2nd;
+				}
+			}
 		}
 	}
 
-	// algorithm 2 for single block update variable but multiple assignment chains
-	for (int iCurrent = 3; iCurrent <= cfi.iFirst; iCurrent += 2)
+	// search assignment for nonJcc
+	for (int iCurrent = cfi.iFirst - 1; iCurrent > 0; iCurrent -= 2)
 	{
-		mblock_t *mb = mba->get_mblock(iCurrent);
-		int tmp = FindBlockTargetOrLastCopy(mb, mb, opCopy, false, false);
-		mop_t *opCopy2nd = m_DeferredErasuresLocal.back().opCopy;
-		if (HandleTwoPreds(mb, mbTheFirst, opCopy2nd, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget))
-			return true;
+		nonJcc = mba->get_mblock(iCurrent);
+		if (!is_mcode_jcond(nonJcc->tail->opcode))
+		{
+			actualJccTarget = FindBlockTargetOrLastCopy(nonJcc, nonJcc, opCopy, false, false);
+			if (actualJccTarget >= 0 && actualGotoTarget >= 0)
+			{
+				// actual endsWithJcc is the pred of nonJcc
+				endsWithJcc = mba->get_mblock(nonJcc->pred(0));
+				return true;
+			}
+		}
 	}
 
 	return false;
@@ -420,7 +513,9 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 #if UNFLATTENDEBUG
 	// If we're debugging, save a copy of the graph on disk
 	snprintf(buf, sizeof(buf), "c:\\temp\\dumpBefore-%s-%d.txt", matStr, atThisMaturity);
-	DumpMBAToFile(mba, buf);
+	//DumpMBAToFile(mba, buf);
+	static int zz; zz++;
+	mba->dump_mba(true, "before deob %d", zz);
 #endif
 
 	// operation condition
@@ -576,7 +671,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 				dgm.Replace(mb->serial, cfi.iDispatch, iDestNo);
 				mb->tail->d.b = iDestNo;
 #if UNFLATTENVERBOSE
-				msg("[I] The dispatcher predecessor = %d (conditional jump true case), cluster head = %d, destination = %d\n", iDispPred, iClusterHead, iDestNo);
+				msg("[*] The dispatcher predecessor = %d (conditional jump true case), cluster head = %d, destination = %d\n", iDispPred, iClusterHead, iDestNo);
 #endif
 			}
 			else
@@ -584,7 +679,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 				// Make a note to ourselves to modify the graph structure later
 				dgm.ChangeGoto(mb, cfi.iDispatch, iDestNo);
 #if UNFLATTENVERBOSE
-				msg("[I] The dispatcher predecessor = %d (goto), cluster head = %d, destination = %d\n", iDispPred, iClusterHead, iDestNo);
+				msg("[*] The dispatcher predecessor = %d (goto), cluster head = %d, destination = %d\n", iDispPred, iClusterHead, iDestNo);
 #endif
 			}
 			mb->mark_lists_dirty();
@@ -602,7 +697,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		if (mb->npred() < 2 && !cfi.bTrackingFirstBlocks)
 			{
 #if UNFLATTENVERBOSE
-			debugmsg("[I] The dispatcher predecessor %d at %#x that assigned non-numeric value had %d predecessors (<2). And the function has no jcc in the first blocks (continue)\n", iDispPred, mb->start, mb->npred());
+			debugmsg("[*] The dispatcher predecessor %d at %#x that assigned non-numeric value had %d predecessors (<2). And the function has no jcc in the first blocks (continue)\n", iDispPred, mb->start, mb->npred());
 #endif
 			continue;
 		}
@@ -611,15 +706,25 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		mblock_t *nonJcc = NULL;
 		int actualGotoTarget, actualJccTarget;
 
-		/*
-		 TODO: bJcond code for HandleTwoPreds and goto n preds (waiting for workarounds from Hex-Rays)
-		 */
-
 		// Call the function that handles the case of a conditional assignment
 		// to the assignment variable (i.e., the flattened version of an
 		// if-statement).
 		if (HandleTwoPreds(mb, mbClusterHead, opCopy, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget))
 		{
+			if (bJcond)
+			{
+//#if UNFLATTENVERBOSE
+				msg("[!] HandleTwoPreds: The dispatcher predecessor = %d (conditional jump true case), actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d  (waiting for workarounds from Hex-Rays)\n", mb->serial, actualGotoTarget, actualJccTarget);
+//#endif
+				continue; // should be removed in the future
+			}
+			else
+			{
+#if UNFLATTENVERBOSE
+				msg("[*] HandleTwoPreds: The dispatcher predecessor = %d (goto), actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, actualGotoTarget, actualJccTarget);
+#endif
+			}
+
 			// If it succeeded...
 			// Get rid of the superfluous assignments
 			ProcessErasures(mba);
@@ -627,67 +732,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 			// Mark that the def-use information will need re-analyzing
 			bDirtyChains = true;
 
-#if UNFLATTENVERBOSE
-			if (bJcond)
-				msg("[I] HandleTwoPreds: The dispatcher predecessor = %d (conditional jump true case), actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, actualGotoTarget, actualJccTarget);
-			else
-				msg("[I] HandleTwoPreds: The dispatcher predecessor = %d (goto), actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, actualGotoTarget, actualJccTarget);
-#endif
-
-			// Make a note to ourselves to modify the graph structure later,
-			// for the non-taken side of the conditional. Change the goto
-			// target.
-			if (bJcond)
-			{
-				// just change the mb tail then continue
-				dgm.Replace(mb->serial, cfi.iDispatch, actualGotoTarget);
-				mb->tail->d.b = actualGotoTarget;
-#if UNFLATTENVERBOSE
-				msg("[E] HandleTwoPreds: The dispatcher predecessor = %d, the tail is conditional jump (waiting for workarounds from Hex-Rays)\n", mb->serial);
-#endif
-				continue;
-			}
-			else
-			{
-				//dgm.Replace(mb->serial, cfi.iDispatch, actualGotoTarget);
-				//mb->tail->l.b = actualGotoTarget;
-				dgm.ChangeGoto(mb, cfi.iDispatch, actualGotoTarget);
-				mb->mark_lists_dirty();
-			}
-
-			// this is not flattened if-statement blocks. Abort.
-			if (actualGotoTarget == actualJccTarget)
-				continue;
-
-			// Copy the instructions from the block that targets the dispatcher
-			// onto the end of the jcc taken block.
-			minsn_t *mbHead = mb->head;
-			minsn_t *mbCurr = mbHead;
-			do
-			{
-				minsn_t *mCopy = new minsn_t(*mbCurr);
-				if (bJcond && is_mcode_jcond(mbCurr->opcode))
-					dgm.ChangeGoto(nonJcc, mb->serial, actualJccTarget);  // TODO: should be handled correctly in the future
-				else
-					nonJcc->insert_into_block(mCopy, nonJcc->tail);
-				mbCurr = mbCurr->next;
-
-#if UNFLATTENVERBOSE
-				mcode_t_to_string(nonJcc->tail, buf, sizeof(buf));
-				debugmsg("[I] %d: tail is %s\n", nonJcc->serial, buf);
-#endif
-
-			} while (mbCurr != NULL);
-
-
-			// Make a note to ourselves to modify the graph structure later,
-			// for the taken side of the conditional. Change the goto target.
-			dgm.Replace(nonJcc->serial, mb->serial, actualJccTarget);
-			nonJcc->tail->l.b = actualJccTarget;
-
-			// We added instructions to the nonJcc block, so its def-use lists
-			// are now spoiled. Mark it dirty.
-			nonJcc->mark_lists_dirty();
+			PostHandleTwoPreds(dgm, mb, cfi.iDispatch, actualGotoTarget, nonJcc, actualJccTarget);
 		}
 		// goto n preds
 		else if (endsWithJcc == NULL && nonJcc == NULL && mb->npred() >= 2)
@@ -697,15 +742,23 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 
 			if (bJcond)
 			{
-#if UNFLATTENVERBOSE
-				msg("[E] goto n preds: The dispatcher predecessor = %d, the tail is conditional jump (waiting for workarounds from Hex-Rays)\n", mb->serial);
-#endif
-				continue;
+//#if UNFLATTENVERBOSE
+				msg("[!] goto n preds: The dispatcher predecessor = %d, the tail is conditional jump (waiting for workarounds from Hex-Rays)\n", mb->serial);
+//#endif
+				continue; // should be removed in the future
 			}
 
 			for (int i = 0; i < mb->npred(); i++)
 			{
 				mblock_t *pred = mba->get_mblock(mb->pred(i));
+				if (pred->tail != NULL && is_mcode_jcond(pred->tail->opcode)) // can not copy to a block ending with a cond jump
+				{
+//#if UNFLATTENVERBOSE
+					msg("[!] goto n preds: The dispatcher predecessor = %d, the tail of the pred is conditional jump (possible but not seen yet)\n", mb->serial);
+//#endif
+					continue;
+				}
+
 				// reset the cluster head for the pred
 				int iClusterHeadForPred;
 				mblock_t *mbClusterHeadForPred = GetDominatedClusterHead(mba, pred->serial, iClusterHeadForPred);
@@ -717,73 +770,65 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 				{
 					if (bJcond)
 					{
-						// the following code will not be executed
 #if UNFLATTENVERBOSE
-						msg("[I] goto n preds: The dispatcher predecessor = %d (conditional jump true case), pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
+						msg("[*] goto n preds: The dispatcher predecessor = %d (conditional jump true case), pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
 #endif
 						if (i == 0)
 						{
-							// update mb
+							// just update mb
 							mb->tail->d.b = iDestPred;
 							dgm.Replace(mb->serial, cfi.iDispatch, iDestPred);
 						}
 						else
 						{
-							// copy the mb and mb+1 (false block) for each pred
-							mblock_t *mbCopy, *mbSuccFalseCopy;
-							mblock_t *mbSuccFalse = mba->get_mblock(mb->serial + 1);
-							CopyMblock(mba, dgm, mb, mbCopy);
-							CopyMblock(mba, dgm, mbSuccFalse, mbSuccFalseCopy);
-							if (mbCopy->serial + 1 != mbSuccFalseCopy->serial)
-							{
-#if UNFLATTENVERBOSE
-								msg("[E] goto n preds: copied blocks are not successive for a conditional jump. Abort. \n", mb->serial);
-#endif
-								continue;
-							}
-							// update pred
-							dgm.ChangeGoto(pred, mb->serial, mbCopy->serial);
-							pred->mark_lists_dirty();
-							// update mbCopy
-							mbCopy->tail->d.b = iDestPred;
-							dgm.Add(mbCopy->serial, mbCopy->serial + 1); // the order is important (add false case then true case, or INTERR 50860)
-							dgm.Add(mbCopy->serial, iDestPred);
-							// update mbSuccFalseCopy
-							for (int j = 0; j < mbSuccFalse->nsucc(); ++j)
-								dgm.Add(mbSuccFalseCopy->serial, mbSuccFalse->succ(j));
+							// copy the conditional blocks for each pred
+							CopyAndConnectConditionalBlocksToPred(dgm, mb, pred, iDestPred);
 						}
 					}
 					else
 					{
 #if UNFLATTENVERBOSE
-						msg("[I] goto n preds: The dispatcher predecessor = %d (goto), pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
+						msg("[*] goto n preds: The dispatcher predecessor = %d (goto), pred index %d (%d -> %d)\n", mb->serial, i, pred->serial, iDestPred);
 #endif
-						// copy: mb code to the pred tail
-						CopyMinsnsToTailNoCond(mb, pred);
-						dgm.ChangeGoto(pred, mb->serial, iDestPred);
-						pred->mark_lists_dirty();
+						// change the destination from mb->serial to iDestPred
+						DisconnectBlockFromPred(dgm, mb, pred, iDestPred);
 					}
 				}
 				// for flattened conditional predecessors
 				else if (pred->npred() == 2 && HandleTwoPreds(pred, mbClusterHeadForPred, opCopy, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget))
 				{
-#if UNFLATTENVERBOSE
-					msg("[I] goto n preds: The dispatcher predecessor = %d, pred index %d block number %d, actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, i, pred->serial, actualGotoTarget, actualJccTarget);
-#endif
-					// 1st copy: mb code to the pred tail
-					CopyMinsnsToTailNoCond(mb, pred);
-					//PostHandleTwoPredsNoCond(dgm, pred, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget);
-					dgm.ChangeGoto(pred, pred->succ(0), actualGotoTarget);
-					pred->mark_lists_dirty();
-
-					if (actualGotoTarget != actualJccTarget)
+					if (bJcond)
 					{
-						// 2nd copy: the pred code to nonJcc tail
-						CopyMinsnsToTailNoCond(pred, nonJcc);
-						//dgm.Replace(nonJcc->serial, pred->serial, actualJccTarget);
-						//nonJcc->tail->l.b = actualJccTarget;
-						dgm.ChangeGoto(nonJcc, pred->serial, actualJccTarget);
+#if UNFLATTENVERBOSE
+						msg("[*] HandleTwoPreds + goto n preds combo: The dispatcher predecessor = %d (conditional jump true case), pred index %d block number %d, actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, i, pred->serial, actualGotoTarget, actualJccTarget);
+#endif
+						mblock_t *mbCopy, *predCopy;
+
+						// copy the conditional blocks for each pred
+						CopyAndConnectConditionalBlocksToPred(dgm, mb, pred, cfi.iDispatch);
+						mbCopy = mba->get_mblock(pred->succ(0)); // pred->succ(0) == copied mb serial
+
+						// copy pred block for mb with a conditional jump
+						CopyMblock(dgm, pred, predCopy);
+						dgm.Add(predCopy->serial, mbCopy->serial);
+
+						// connect nonJcc to the copy
+						dgm.ChangeGoto(nonJcc, pred->serial, predCopy->serial);
 						nonJcc->mark_lists_dirty();
+
+						// the same operations as ones in HandleTwoPreds case
+						PostHandleTwoPreds(dgm, mbCopy, cfi.iDispatch, actualGotoTarget, predCopy, actualJccTarget);
+					}
+					else
+					{
+#if UNFLATTENVERBOSE
+						msg("[*] HandleTwoPreds + goto n preds combo: The dispatcher predecessor = %d (goto), pred index %d block number %d, actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, i, pred->serial, actualGotoTarget, actualJccTarget);
+#endif
+						// 1st copy: mb code to the pred tail
+						CopyMinsnsToTailNoCond(mb, pred);
+
+						// the same operations as ones in HandleTwoPreds case
+						PostHandleTwoPreds(dgm, pred, mb->serial, actualGotoTarget, nonJcc, actualJccTarget);
 					}
 				}
 				else
@@ -821,9 +866,9 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 			}
 #if UNFLATTENVERBOSE
 			if (bJcond)
-				msg("[I] first blocks: The dispatcher predecessor = %d (conditional jump true case), actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, actualGotoTarget, actualJccTarget);
+				msg("[*] first blocks: The dispatcher predecessor = %d (conditional jump true case), endsWithJcc = %d & actualGotoTarget = %d, nonJcc = %d & actualJccTarget = %d\n", mb->serial, endsWithJcc->serial, actualGotoTarget, nonJcc->serial, actualJccTarget);
 			else
-				msg("[I] first blocks: The dispatcher predecessor = %d (goto), actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, actualGotoTarget, actualJccTarget);
+				msg("[*] first blocks: The dispatcher predecessor = %d (goto), endsWithJcc = %d & actualGotoTarget = %d, nonJcc = %d & actualJccTarget = %d\n", mb->serial, endsWithJcc->serial, actualGotoTarget, nonJcc->serial, actualJccTarget);
 #endif
 			ProcessErasures(mba);
 			bDirtyChains = true;
@@ -851,7 +896,7 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		else
 		{
 #if UNFLATTENVERBOSE
-			msg("[I] end of loop: The dispatcher predecessor = %d at %#x\n", mb->serial, mb->start);
+			msg("[*] end of loop: The dispatcher predecessor = %d at %#x\n", mb->serial, mb->start);
 #endif
 		}
 	} // end for loop that unflattens all blocks
@@ -886,6 +931,8 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 #endif
 		mba->optimize_local(0);
 	}
+
+  mba->dump_mba(true, "after deob");
 
 	// If we changed the graph, verify that we did so legally.
 	if (iChanged != 0)

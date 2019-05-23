@@ -293,7 +293,7 @@ struct HandoffVarFinder : public minsn_visitor_t
 						{
 						sc.second += 1;
 						//std::get<1>(sc) += 1;
-						if (curins->opcode == m_and && curins->r.nnn->value != 0)
+						if (curins->opcode == m_and && curins->r.t == mop_n && curins->r.nnn->value != 0)
 							//std::get<2>(sc) = curins->r.nnn->value;
 							andImm = curins->r.nnn->value;
 						bFound = true;
@@ -302,7 +302,7 @@ struct HandoffVarFinder : public minsn_visitor_t
 				if (!bFound)
 				{
 					m_SeenCopies.push_back(std::pair<mop_t *, int>(as.first, 1));
-					if (curins->opcode == m_and && curins->r.nnn->value != 0)
+					if (curins->opcode == m_and && curins->r.t == mop_n && curins->r.nnn->value != 0)
 						andImm = curins->r.nnn->value;
 					//m_SeenCopies.push_back(std::tuple<mop_t *, int, uint64>(as.first, 1, 0));
 					/*std::tuple<mop_t *&, int&, uint64&> t = std::tie(as.first, cnt, andImm);
@@ -533,9 +533,17 @@ int CFFlattenInfo::TranslateEA2Block(ea_t ea, mbl_array_t *mba)
 		int64 min = mb->start;
 		int64 max = mb->end - 1;
 		if (min <= ea && ea <= max)
+		{
+#if UNFLATTENVERBOSE
+			msg("[I] TranslateEA2Block: The ea %08lx resolved to %d in 1st try\n", ea, mb->serial);
+#endif
 			return mb->serial;
+		}
 	}
+
 	// 2nd try for mblock_t start/end or minsn_t ea (aggresive and less reliable)
+	unsigned int untrusted = 0xffffffff;
+	int serial = 0;
 	for (mblock_t *mb = mba->get_mblock(1); mb != NULL; mb = mb->nextb)
 	{
 		if (mb->start == -1 || mb->end == -1 || mb->head == NULL || mb->tail == NULL)
@@ -550,13 +558,23 @@ int CFFlattenInfo::TranslateEA2Block(ea_t ea, mbl_array_t *mba)
 		}
 		ea_t min = mb->start < ea_min ? mb->start : ea_min;
 		ea_t max = mb->end - 1 > ea_max ? mb->end - 1 : ea_max;
-		if (min <= ea && ea <= max)
-			return mb->serial;
+		//if (min <= ea && ea <= max && max - min < untrusted)
+		if (min <= ea && ea <= max && max - ea < untrusted)
+		{
+			serial = mb->serial;
+			//untrusted = max - min;
+			untrusted = max - ea;
+		}
 	}
-/*#if UNFLATTENVERBOSE
-	msg("[E] ea %08lx in MMAT_LOCOPT cannot be translated to block ID in MMAT_GLBOPT2\n", ea);
-#endif*/
-	return -1;
+	if (serial)
+	{
+#if UNFLATTENVERBOSE
+		msg("[I] TranslateEA2Block: The ea %08lx resolved to %d in 2nd try (less reliable)\n", ea, serial);
+#endif
+		return serial;
+	}
+	else
+		return -1;
 }
 
 int CFFlattenInfo::FindBlockByKeyFromEA(uint64 key, mbl_array_t *mba)
@@ -769,7 +787,9 @@ bool CFFlattenInfo::GetAssignedAndComparisonVariables(mblock_t *blk)
 		}
 		if (!bFound)
 		{
+#if UNFLATTENVERBOSE
 			debugmsg("[E] ??? couldn't find assignment to assignment variable?\n");
+#endif
 			return false;
 		}
 	}
