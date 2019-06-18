@@ -144,6 +144,6 @@ plugin_t PLUGIN =
 						  // it could appear in the status line
 						  // or as a hint
 	"",                   // multiline help about the plugin
-	"Microcode explorer (HexRaysDeob)", // the preferred short name of the plugin
+	"HexRaysDeob", // the preferred short name of the plugin
 	""                    // the preferred hotkey to run the plugin
 };

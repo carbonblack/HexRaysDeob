@@ -3,7 +3,6 @@
 
 int RemoveSingleGotos(mbl_array_t *mba);
 bool SplitMblocksByJccEnding(mblock_t *pred1, mblock_t *pred2, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int &jccDest, int &jccFallthrough);
-int PruneUnreachable(mbl_array_t *mba);
 void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest);
 
 // The "deferred graph modifier" records changes that the client wishes to make
@@ -12,12 +11,17 @@ void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest);
 // the modifications until we're done iterating over the graph.
 struct DeferredGraphModifier
 {
-	std::vector<std::pair<int, int> > m_RemoveEdges;
-	std::vector<std::pair<int, int> > m_AddEdges;
-	void Remove(int src, int dest);
-	void Add(int src, int dest);
+        struct edgeinfo_t
+        {
+          int src;
+          int dst1;
+          int dst2;
+        };
+        typedef qvector<edgeinfo_t> edges_t;
+        edges_t edges;
+        void Add(int src, int dest);
 	void Replace(int src, int oldDest, int newDest);
 	int Apply(mbl_array_t *mba);
 	bool ChangeGoto(mblock_t *blk, int iOld, int iNew);
-	void Clear() { m_RemoveEdges.clear(); m_AddEdges.clear(); }
+	void Clear() { edges.clear(); }
 };

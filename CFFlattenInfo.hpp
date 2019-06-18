@@ -72,5 +72,4 @@ struct CFFlattenInfo
 	CFFlattenInfo() { Clear(false); }
 	~CFFlattenInfo() { Clear(true); }
 	bool GetAssignedAndComparisonVariables(mblock_t *blk);
-	//mblock_t * TranslateBlock(mbl_array_t * omba, mblock_t * mb);
 };

@@ -9,7 +9,8 @@ struct mblock_virtual_dumper_t : public vd_printer_t
 {
 	int nline;
 	int serial;
-	mblock_virtual_dumper_t() : nline(0), serial(0) {};
+	mblock_virtual_dumper_t() : nline(0), serial(0) {}
+	virtual ~mblock_virtual_dumper_t() {}
 	virtual void AddLine(qstring &qs) = 0;
 	AS_PRINTF(3, 4) int print(int indent, const char *format, ...)
 	{
@@ -35,7 +36,7 @@ struct mblock_virtual_dumper_t : public vd_printer_t
 struct mblock_qstring_dumper_t : public mblock_virtual_dumper_t
 {
 	qstring qStr;
-	mblock_qstring_dumper_t() : mblock_virtual_dumper_t() {};
+	virtual ~mblock_qstring_dumper_t() {}
 	virtual void AddLine(qstring &qs)
 	{
 		qStr.append(qs);
@@ -45,7 +46,7 @@ struct mblock_qstring_dumper_t : public mblock_virtual_dumper_t
 struct mblock_dumper_t : public mblock_virtual_dumper_t
 {
 	strvec_t lines;
-	mblock_dumper_t() : mblock_virtual_dumper_t() {};
+	virtual ~mblock_dumper_t() {}
 	virtual void AddLine(qstring &qs)
 	{
 		lines.push_back(simpleline_t(qs));
@@ -103,7 +104,7 @@ protected:
 		return m_NumBlocks++;
 	}
 
-	int Insert(minsn_t *ins, int iParent)
+	int Insert(minsn_t *ins, int /*iParent*/)
 	{
 		char l_Buf[MAXSTR];
 		mcode_t_to_string(ins, l_Buf, sizeof(l_Buf));
@@ -155,7 +156,7 @@ protected:
 		}
 		case mop_a: // result of another instruction
 		{
-			int iDestBlock = Insert(*op.a, iThisBlock, 0);
+			Insert(*op.a, iThisBlock, 0);
 			break;
 		}
 		}
@@ -193,7 +194,7 @@ public:
 		m_GV = create_graph_viewer(m_GVName.c_str(), id, migr_callback, this, 0, m_TW);
 		activate_widget(m_TW, true);
 #if IDA_SDK_VERSION == 710
-		display_widget(m_TW, WOPN_MENU);
+		display_widget(m_TW, WOPN_TAB | WOPN_MENU);
 #elif IDA_SDK_VERSION >= 720
 		display_widget(m_TW, 0);
 #endif
@@ -279,7 +280,7 @@ public:
 		graph_viewer_t *gv = create_graph_viewer(m_GVName.c_str(), id, mgr_callback, this, 0, tw);
 		activate_widget(tw, true);
 #if IDA_SDK_VERSION == 710
-		display_widget(tw, WOPN_MENU);
+		display_widget(tw, WOPN_TAB | WOPN_MENU);
 #elif IDA_SDK_VERSION >= 720
 		display_widget(tw, 0);
 #endif

@@ -1,6 +1,6 @@
 // This file tries to fix the stack pointer differentials at call sites for
 // alloca(). Basically, this binary uses a GCC-like argument-passing schema
-// like sub esp, 4 / mov [esp], eax, except that the "sub esp, 4" is 
+// like sub esp, 4 / mov [esp], eax, except that the "sub esp, 4" is
 // implemented as a call to __alloca_probe. IDA usually handles these calls
 // remarkably well for ordinary compiled binaries, but this obfuscator doesn't
 // produce ordinary binaries. Thus, IDA's typical analysis fails to determine
@@ -27,7 +27,8 @@ struct AllocaFixer : minsn_visitor_t
 	// Results are stored here
 	std::vector<std::pair<ea_t, int> > m_FixupLocations;
 
-	int visit_minsn(void)
+        virtual ~AllocaFixer() {}
+	int idaapi visit_minsn(void)
 	{
 		// Only process calls to alloca
 		if (curins->opcode != m_call || curins->l.t != mop_h || qstrcmp(curins->l.helper, "alloca") != 0)
@@ -60,10 +61,10 @@ if (func == NULL)
 #endif
 		if (args.size() != 1)
 		{
-			msg("[E] Call to alloca had %d arguments instead of 1?\n", args.size());
+			msg("[E] Call to alloca had %" FMT_Z " arguments instead of 1?\n", args.size());
 			return 0;
 		}
-		
+
 		// We can only fix the call site if its parameter is a constant number
 		if (args[0].t != mop_n)
 		{
@@ -77,7 +78,7 @@ if (func == NULL)
 	}
 };
 
-// Find all calls to __alloca_probe, extract the parameters, and update the 
+// Find all calls to __alloca_probe, extract the parameters, and update the
 // stack pointer differentials.
 void FixCallsToAllocaProbe()
 {
@@ -92,7 +93,7 @@ void FixCallsToAllocaProbe()
 	std::set<func_t *> funcsCallingAlloca;
 	xrefblk_t xr;
 	bool bFirst = true;
-	
+
 	// Examine all addresses that reference __alloca_probe, and collect their
 	// func_t * containing function objects.
 	while (bFirst ? xr.first_to(eaAlloca, XREF_FAR) : xr.next_to())
@@ -111,7 +112,7 @@ void FixCallsToAllocaProbe()
 		funcsCallingAlloca.insert(f);
 	}
 
-	// For each function that calls __alloca_probe(), extract the address of 
+	// For each function that calls __alloca_probe(), extract the address of
 	// each such call and its integer argument. Set a stack pointer delta at
 	// that address with that value.
 	for (auto f : funcsCallingAlloca)
@@ -129,7 +130,7 @@ void FixCallsToAllocaProbe()
 		// Extract the alloca information by visiting its top-level instructions
 		AllocaFixer af;
 		mba->for_all_insns(af);
-		
+
 		// We own the mbl_array_t produced by gen_microcode, so we have to delete it.
 		delete mba;
 

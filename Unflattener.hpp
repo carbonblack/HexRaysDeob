@@ -23,16 +23,19 @@ struct CFUnflattener : public optblock_t
 	}
 
 	CFUnflattener() { Clear(false); };
-	~CFUnflattener() { Clear(true); }
+	virtual ~CFUnflattener() { Clear(true); }
 	int idaapi func(mblock_t *blk);
 	mblock_t *GetDominatedClusterHead(mbl_array_t *mba, int iDispPred, int &iClusterHead);
 	int FindBlockTargetOrLastCopy(mblock_t *mb, mblock_t *mbClusterHead, mop_t *what, bool bAllowMultiSuccs, bool bRecursive);
 	bool HandleTwoPreds(mblock_t *mb, mblock_t *mbClusterHead, mop_t *opCopy, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int &actualGotoTarget, int &actualJccTarget);
-	void CopyMinsnsToTailNoCond(mblock_t * src, mblock_t *& dst);
+	void CopyOrAppendMinsns(mblock_t * src, mblock_t *& dst);
 	void CopyMblock(DeferredGraphModifier &dgm, mblock_t * src, mblock_t *& dst);
-	bool CopyAndConnectConditionalBlocksToPred(DeferredGraphModifier &dgm, mblock_t *mb, mblock_t *&pred, int iDest);
+	void UpdateDestBlockNumber(DeferredGraphModifier & dgm, mblock_t * mb, int oldDest, int newDest);
+	int CopyAndConnectBlocksToPred(DeferredGraphModifier &dgm, mblock_t *mb, mblock_t *&pred, int iDest);
+	void CorrectStopBlockPreds(DeferredGraphModifier & dgm, mbl_array_t * mba, intvec_t stopPreds);
 	void DisconnectBlockFromPred(DeferredGraphModifier &dgm, mblock_t *mb, mblock_t *&pred, int iDest);
-	bool PostHandleTwoPreds(DeferredGraphModifier &dgm, mblock_t *&mb, int actualGotoTargetOld, int actualGotoTargetNew, mblock_t *&nonJcc, int actualJccTarget);
+	int PostHandleTwoPreds(DeferredGraphModifier &dgm, mblock_t *&mb, int actualGotoTargetOld, int actualGotoTargetNew, mblock_t *&nonJcc, int actualJccTarget);
 	bool FindJccInFirstBlocks(mbl_array_t *mba, mop_t *&opCopy, mblock_t *&endsWithJcc, mblock_t *&nonJcc, int &actualGotoTarget, int &actualJccTarget);
 	void ProcessErasures(mbl_array_t *mba);
+	void CheckInterr50860(mblock_t * mb);
 };

@@ -99,7 +99,7 @@
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ida32 Debug|x64'">
-    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);Z:\cloud\gd\work\python\IDAPython\hexrays\hexrays_sdk72\include;Z:\cloud\gd\work\python\IDAPython\hexrays\idasdk72\include</IncludePath>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);Z:\cloud\gd\work\python\IDAPython\hexrays\hexrays_sdk73\include;Z:\cloud\gd\work\python\IDAPython\hexrays\idasdk73\include</IncludePath>
     <OutDir>Z:\cloud\gd\Tools\IDA\plugins\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ida64 Debug|x64'">

@@ -1,17 +1,6 @@
 #include <hexrays.hpp>
 #include "HexRaysUtil.hpp"
 #include "TargetUtil.hpp"
-#include "Config.hpp"
-
-static int debugmsg(const char *fmt, ...)
-{
-#if UNFLATTENVERBOSE
-	va_list va;
-	va_start(va, fmt);
-	return vmsg(fmt, va);
-#endif
-	return 0;
-}
 
 // Append a goto onto a non-empty block, which is assumed not to already have
 // a goto at the end of it.
@@ -29,9 +18,6 @@ void AppendGotoOntoNonEmptyBlock(mblock_t *blk, int iBlockDest)
 
 	// Add it onto the block
 	blk->insert_into_block(newGoto, blk->tail);
-#if UNFLATTENVERBOSE
-    msg("### %d: added goto %d\n", blk->serial, iBlockDest);
-#endif
 }
 
 // For a block with a single successor, change its target from some old block
@@ -49,9 +35,6 @@ void ChangeSingleTarget(mblock_t *blk, int iOldTarget, int iNewTarget)
 
 	// Remove this block from the predecessor set of the old target
 	mba->get_mblock(iOldTarget)->predset.del(blk->serial);
-#if UNFLATTENVERBOSE
-    msg("### %d: fixed outset %d\n", blk->serial, iNewTarget);
-#endif
 }
 
 // Reverse engineered from hexrays.dll (though it's obvious). Basically: does
@@ -87,8 +70,7 @@ int RemoveSingleGotos(mbl_array_t *mba)
 
 		// Get the block and skip any "assert" instructions.
 		mblock_t *b = mba->get_mblock(i);
-		//minsn_t *m2 = getf_reginsn(b->head);
-		minsn_t *m2 = b->head; // to prevent INTERR 51919?
+		minsn_t *m2 = getf_reginsn(b->head);
 
 		// Is the first non-assert instruction a goto?
 		if (m2 == NULL || m2->opcode != m_goto || m2->l.t != mop_b)
@@ -246,68 +228,47 @@ bool SplitMblocksByJccEnding(mblock_t *pred1, mblock_t *pred2, mblock_t *&endsWi
 	return true;
 }
 
-// Plan to remove an edge from src->dest
-void DeferredGraphModifier::Remove(int src, int dest)
-{
-#if UNFLATTENVERBOSE
-    msg("### plan del edge %d -> %d\n", src, dest);
-#endif
-	m_RemoveEdges.push_back(std::pair<int, int>(src, dest));
-}
-
-// Plan to add an edge from src->dest
+// Plan to add an edge
 void DeferredGraphModifier::Add(int src, int dest)
 {
-#if UNFLATTENVERBOSE
-    msg("### plan add edge %d -> %d\n", src, dest);
-#endif
-	m_AddEdges.push_back(std::pair<int, int>(src, dest));
+        edgeinfo_t &ei = edges.push_back();
+        ei.src = src;
+        ei.dst1 = -1;
+        ei.dst2 = dest;
 }
 
 // Plan to replace an edge from src->oldDest to src->newDest
 void DeferredGraphModifier::Replace(int src, int oldDest, int newDest)
 {
-	Remove(src, oldDest);
-	Add(src, newDest);
+        for ( const auto &ei: edges )
+          if ( ei.src == src && ei.dst1 == oldDest )
+            oldDest = ei.dst2; // update block to be deleted
+        edgeinfo_t &ei = edges.push_back();
+        ei.src = src;
+        ei.dst1 = oldDest;
+        ei.dst2 = newDest;
 }
 
 // Apply the planned changes to the graph
 int DeferredGraphModifier::Apply(mbl_array_t *mba)
 {
-	int iChanged = 0;
-
-	// Iterate through the edges slated for removal
-	for (auto re : m_RemoveEdges)
+	// Iterate through the edges slated for removal or addition
+	for (const auto &re: edges)
 	{
-		mblock_t *mSrc = mba->get_mblock(re.first);
-		mblock_t *mDst = mba->get_mblock(re.second);
-
-		// Remove the source as a predecessor for dest, and vice versa
-		mSrc->succset.del(mDst->serial);
-		mDst->predset.del(mSrc->serial);
-
-#if UNFLATTENVERBOSE
-		debugmsg("[I] Removed edge %d->%d (%d->%d)\n", mSrc->serial, mDst->serial, re.first, re.second);
-#endif
-		++iChanged;
+		mblock_t *mSrc = mba->get_mblock(re.src);
+                if ( re.dst1 != -1 )
+                {
+		  mblock_t *mDst1 = mba->get_mblock(re.dst1);
+		  mSrc->succset.del(mDst1->serial);
+		  mDst1->predset.del(mSrc->serial);
+                }
+		mblock_t *mDst2 = mba->get_mblock(re.dst2);
+		mSrc->succset.add(mDst2->serial);
+		mDst2->predset.add(mSrc->serial);
+		debugmsg("[I] Replaced edge (%d->%d) by (%d->%d)\n", re.src, re.dst1, re.src, re.dst2);
 	}
 
-	// Iterate through the edges slated for addition
-	for (auto ae : m_AddEdges)
-	{
-		mblock_t *mSrc = mba->get_mblock(ae.first);
-		mblock_t *mDst = mba->get_mblock(ae.second);
-
-		// Add the source as a predecessor for dest, and vice versa
-		mSrc->succset.add(mDst->serial);
-		mDst->predset.add(mSrc->serial);
-
-#if UNFLATTENVERBOSE
-		debugmsg("[I] Added edge %d->%d (%d->%d)\n", mSrc->serial, mDst->serial, ae.first, ae.second);
-#endif
-		++iChanged;
-	}
-	return iChanged;
+	return edges.size();
 }
 
 // Either change the destination of an existing goto, or add a new goto onto
@@ -319,7 +280,6 @@ bool DeferredGraphModifier::ChangeGoto(mblock_t *blk, int iOld, int iNew)
 	QASSERT(99000, blk->tail == NULL || !is_mcode_jcond(blk->tail->opcode));
 
 	bool bChanged = true;
-	int iDispPred = blk->serial;
 
 	// If the last instruction isn't a goto, add a new one
 	if (blk->tail->opcode != m_goto)
@@ -375,80 +335,3 @@ void DeleteBlock(mblock_t *mb)
 	mb->tail = NULL;
 }
 
-// The goto-to-goto elimination and unflattening phases remove edges in the
-// control flow graph represented in the mbl_array_t *. As a result, certain
-// blocks might no longer be reachable anymore in the graph. Thus, they can be
-// deleted with no ill-effects. In theory, we could wait for Hex-Rays to remove
-// these blocks, which it eventually will, sometime after MMAT_GLBOPT2.
-// Originally, I just let Hex-Rays remove the blocks. However, it turned out
-// that the blocks were removed too late, which hampered other optimizations
-// that Hex-Rays otherwise would have been able to perform had the blocks been
-// eliminated earlier. Thus, I wrote this function to remove the unreachable
-// blocks immediately after unflattening, which allowed the aforementioned
-// simplifications to happen.
-//
-// At the time of writing, I'm still coordinating with Hex-Rays to see if I can
-// make use of internal decompiler machinery to perform elimination. If I can,
-// we'll use that instead of this function. For now, we prune manually.
-int PruneUnreachable(mbl_array_t *mba)
-{
-	// This set marks the vertices we've already visited. This both prevents
-	// infinite loops in the depth-first search, as well as records the
-	// unreachable blocks after the search terminates.
-	bitset_t visited;
-
-	// This is a standard worklist-based algorithm. This list keeps track of
-	// reachable predecessors yet-to-be-visited.
-	qlist<int> worklist;
-
-	// Initialize the worklist to block #0, which always denotes the entry
-	// block in an mbl_array_t.
-	worklist.push_back(0);
-
-	// Worklist iteration: process the next reachable block.
-	while (!worklist.empty())
-	{
-		// Get the reachable block number, and remove it from the worklist.
-		int iCurr = worklist.back();
-		worklist.pop_back();
-
-		// Prevent infinite loops by not visiting blocks more than once.
-		if (visited.has(iCurr))
-			continue;
-
-		// Mark that we have visited this particular block.
-		visited.add(iCurr);
-
-		// Insert all of the successors of this block into the worklist. It's
-		// fine if we insert a block that's already been visited, as the check
-		// above will prevent it from being visited again.
-		for (auto iSucc : mba->get_mblock(iCurr)->succset)
-			worklist.push_back(iSucc);
-	}
-
-
-	// Count the number of unreachable blocks we remove.
-	int nRemoved = 0;
-
-	// Iterate over all blocks in the mbl_array_t...
-	for (int i = 0; i < mba->qty; ++i)
-	{
-		// ... if it wasn't visited by the procedure above, then it's
-		// unreachable.
-		if (!visited.has(i))
-		{
-			// If so, delete the instructions on the block and remove any
-			// outgoing edges.
-			DeleteBlock(mba->get_mblock(i));
-			++nRemoved;
-		}
-	}
-
-	// At this point we have to explicitly trigger removal of empty blocks. If
-	// we don't, we'll get an INTERR.
-	if(nRemoved != 0)
-		mba->remove_empty_blocks();
-
-	// Returns the number of blocks removed.
-	return nRemoved;
-}

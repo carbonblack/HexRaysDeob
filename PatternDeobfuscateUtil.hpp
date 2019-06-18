@@ -16,13 +16,13 @@ bool TraceAndExtractOpsMovAndSubBy1(mblock_t *blk, mop_t *&opMov, mop_t *&opSub,
 class XorSimplifier
 {
 public:
-	XorSimplifier() : m_InsertedConst(0), m_InsertedNonConst(0) {};
+	XorSimplifier() : m_InsertedNonConst(0), m_InsertedConst(0) {}
 
 	// The set of terms in the XOR chain that aren't constant numbers.
 	std::set<mop_t *> m_NonConst;
 	// A counter for number of insertions of non-constant terms.
 	int m_InsertedNonConst;
-	
+
 	// The set of constant number terms, and an insertion counter.
 	std::set<mop_t *> m_Const;
 	int m_InsertedConst;
@@ -37,6 +37,6 @@ public:
 	bool InsertConst(mop_t *op);
 	void Insert(mop_t *op);
 	void Insert(minsn_t *insn);
-	bool DidSimplify();
-	bool Simplify(minsn_t *insn, mblock_t *blk);
+	bool DidSimplify() const;
+	bool Simplify(minsn_t *insn, mblock_t *blk=NULL);
 };
