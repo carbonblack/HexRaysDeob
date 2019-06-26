@@ -14,6 +14,7 @@ std::set<ea_t> g_BlackList;
 std::set<ea_t> g_WhiteList;
 
 mba_maturity_t g_LastMaturity = MMAT_ZERO;
+ea_t g_LastFuncEa = BADADDR;
 int g_NumGotosRemoved = 0;
 int atThisMaturity = 0;
 
@@ -545,12 +546,13 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 	const char *matStr = MicroMaturityToString(mba->maturity);
 	//debugmsg("[I] Block optimization called at maturity level %s\n", matStr);
 
-	// Only operate once per maturity level
-	if (g_LastMaturity == mba->maturity && !this->bLastChance)
+	// Only operate once per maturity level in the function except hxe_prealloc events
+	if (g_LastMaturity == mba->maturity && g_LastFuncEa == mba->entry_ea && !this->bLastChance)
 		return 0;
 
-	// Update the maturity level
+	// Update the last maturity level and function address
 	g_LastMaturity = mba->maturity;
+	g_LastFuncEa = mba->entry_ea;
 
 #if UNFLATTENDEBUG
 	// If we're debugging, save a copy of the graph on disk
@@ -817,34 +819,33 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 				// for flattened conditional predecessors
 				else if (pred->npred() == 2 && HandleTwoPreds(pred, mbClusterHeadForPred, opCopy, endsWithJcc, nonJcc, actualGotoTarget, actualJccTarget))
 				{
-					if (bJcond)
+					if (bJcond || bJcondPred)
 					{
 						debugmsg("[*] HandleTwoPreds + goto n preds combo: The dispatcher predecessor = %d (conditional jump true case), pred index %d block number %d, actualGotoTarget from endsWithJcc = %d, actualJccTarget from nonJcc = %d\n", mb->serial, i, pred->serial, actualGotoTarget, actualJccTarget);
 
 						mblock_t *mbCopy, *predCopy;
 
-						// copy the conditional blocks for each pred
+						// copy and connect #1: copied mb to each pred
 						int iCopied = CopyAndConnectBlocksToPred(dgm, mb, pred, cfi.iDispatch);
 						if (iCopied != -1)
 						{
 							mbCopy = mba->get_mblock(iCopied);
 
-							// copy pred block for mb with a conditional jump
-							CopyMblock(dgm, pred, predCopy);
-							dgm.Add(predCopy->serial, mbCopy->serial);
+							// copy and connect #2: copied pred to nonJcc
+							int iCopied = CopyAndConnectBlocksToPred(dgm, pred, nonJcc, mbCopy->serial);
+							if (iCopied != -1)
+							{
+								predCopy = mba->get_mblock(iCopied);
 
-							// connect nonJcc to the copy
-							dgm.ChangeGoto(nonJcc, pred->serial, predCopy->serial);
-							nonJcc->mark_lists_dirty();
+								// the same operations as ones in HandleTwoPreds case
+								iCopied = PostHandleTwoPreds(dgm, mbCopy, cfi.iDispatch, actualGotoTarget, predCopy, actualJccTarget);
 
-							// the same operations as ones in HandleTwoPreds case
-							iCopied = PostHandleTwoPreds(dgm, mbCopy, cfi.iDispatch, actualGotoTarget, predCopy, actualJccTarget);
-
-							// add the block if the dest is BLT_STOP
-							if (actualGotoTarget == iStop)
-								stopPreds.add(mbCopy->serial);
-							if (actualJccTarget == iStop && iCopied != -1)
-								stopPreds.add(iCopied); // copied mbCopy's serial
+								// add the block if the dest is BLT_STOP
+								if (actualGotoTarget == iStop)
+									stopPreds.add(mbCopy->serial);
+								if (actualJccTarget == iStop && iCopied != -1)
+									stopPreds.add(iCopied); // copied mbCopy's serial
+							}
 						}
 					}
 					else

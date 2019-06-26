@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ida32 Debug|x64'">
-    <LocalDebuggerCommand>C:\work\tool\IDA73beta\ida.exe</LocalDebuggerCommand>
+    <LocalDebuggerCommand>C:\work\tool\IDAx64\ida.exe</LocalDebuggerCommand>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerCommandArguments>-z20 -LZ:\haru\analysis\tics\ongoing\apt10\samples\ida.log Z:\haru\analysis\tics\ongoing\apt10\samples\f188936d2c8423cf064d6b8160769f21_dec2.idb</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>-z20 -LZ:\haru\analysis\tics\ongoing\apt10\samples\ida.log Z:\haru\analysis\tics\ongoing\apt10\samples\a79f59b1b17e8bfa3299e50a8af9cdaf.idb</LocalDebuggerCommandArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ida64 Debug|x64'">
     <LocalDebuggerCommand>c:\Program Files\IDA 7.2\ida64.exe</LocalDebuggerCommand>
