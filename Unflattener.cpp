@@ -677,9 +677,9 @@ int idaapi CFUnflattener::func(mblock_t *blk)
 		// set the block number of the pred true case if the last assignment is block sub-comparison variable (TODO: the validation with more sample cases needed)
 		if (iDestNo < 0 && cfi.opSubCompared != NULL && equal_mops_ignore_size(*opCopy, *cfi.opSubCompared))
 		{
-			debugmsg("[I] The dispatcher predecessor = %d: the last assignment is block sub-comparison variable (useless loop condition)\n", iDispPred);
+			debugmsg("[I] The dispatcher predecessor = %d: the last assignment is block sub-comparison variable (useless loop condition?)\n", iDispPred);
 			mblock_t *pred = mba->get_mblock(mb->pred(0));
-			if (is_mcode_jcond(pred->tail->opcode))
+			if (is_mcode_jcond(pred->tail->opcode) && pred->npred() == 1)
 			{
 				iDestNo = pred->tail->d.b;
 				debugmsg("[I] The dispatcher predecessor = %d: the destination is set to the block number of the pred true case %d\n", iDispPred, iDestNo);
